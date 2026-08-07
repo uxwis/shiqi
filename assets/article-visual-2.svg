@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 720" role="img" aria-labelledby="title desc">
+  <title id="title">学习笔记与知识连接</title>
+  <desc id="desc">层叠纸张和知识节点组成的编辑插画</desc>
+  <rect width="1200" height="720" fill="#e7f0d5"/>
+  <g transform="translate(610 360) rotate(-7)">
+    <rect x="-330" y="-210" width="660" height="420" rx="28" fill="#1f2b3c" opacity=".12" transform="translate(35 35)"/>
+    <rect x="-330" y="-210" width="660" height="420" rx="28" fill="#fff"/>
+    <path d="M-260-115H170M-260-40H250M-260 35H80M-260 110H210" stroke="#9aa28b" stroke-width="10" stroke-linecap="round"/>
+    <circle cx="245" cy="115" r="62" fill="#ff5b35"/>
+    <path d="M220 115l18 18 34-42" fill="none" stroke="#fff" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <g fill="none" stroke="#1f2b3c" stroke-width="3" opacity=".45"><circle cx="140" cy="125" r="70"/><circle cx="1080" cy="605" r="110"/><path d="M140 195v130M1030 505L880 370"/></g>
+  <g font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif" fill="#1f2b3c">
+    <text x="70" y="650" font-size="22" font-weight="800" letter-spacing="4">NOTES → IDEAS → ACTION</text>
+  </g>
+</svg>

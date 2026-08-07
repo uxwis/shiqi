@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 720" role="img" aria-labelledby="title desc">
+  <title id="title">清晰表达与结构化思考</title>
+  <desc id="desc">由目标、背景、限制与结果组成的编辑插画</desc>
+  <rect width="1200" height="720" fill="#f7d9cf"/>
+  <circle cx="1030" cy="105" r="250" fill="none" stroke="#d66a4d" stroke-width="2" opacity=".45"/>
+  <circle cx="1030" cy="105" r="170" fill="none" stroke="#d66a4d" stroke-width="2" opacity=".35"/>
+  <path d="M90 540C285 390 375 580 570 410S890 250 1100 370" fill="none" stroke="#1f2b3c" stroke-width="10" stroke-linecap="round"/>
+  <g font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif" fill="#1f2b3c">
+    <text x="88" y="120" font-size="24" font-weight="800" letter-spacing="4">THINKING FRAMEWORK</text>
+    <text x="88" y="205" font-size="68" font-weight="900">把问题说清楚</text>
+  </g>
+  <g font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif" font-size="22" font-weight="700" text-anchor="middle">
+    <g transform="translate(170 530)"><circle r="58" fill="#c8f169"/><text y="8" fill="#1f2b3c">目标</text></g>
+    <g transform="translate(430 485)"><circle r="58" fill="#fff"/><text y="8" fill="#1f2b3c">背景</text></g>
+    <g transform="translate(700 360)"><circle r="58" fill="#ff5b35"/><text y="8" fill="#fff">限制</text></g>
+    <g transform="translate(1010 355)"><circle r="76" fill="#1f2b3c"/><text y="8" fill="#fff">结果</text></g>
+  </g>
+</svg>

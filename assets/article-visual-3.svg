@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 720" role="img" aria-labelledby="title desc">
+  <title id="title">安全检查清单</title>
+  <desc id="desc">盾牌、检查项与下载路径组成的编辑插画</desc>
+  <rect width="1200" height="720" fill="#dcecff"/>
+  <path d="M600 85l245 90v170c0 154-97 247-245 304-148-57-245-150-245-304V175z" fill="#1f2b3c"/>
+  <path d="M600 145l185 68v132c0 115-70 187-185 235-115-48-185-120-185-235V213z" fill="#c8f169"/>
+  <path d="M500 353l64 64 142-166" fill="none" stroke="#1f2b3c" stroke-width="30" stroke-linecap="round" stroke-linejoin="round"/>
+  <g font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif" fill="#1f2b3c" font-weight="800">
+    <text x="72" y="105" font-size="22" letter-spacing="4">VERIFY BEFORE INSTALL</text>
+    <text x="72" y="665" font-size="42">来源 · 权限 · 更新 · 校验</text>
+  </g>
+  <g fill="none" stroke="#326aa1" stroke-width="3" opacity=".35"><circle cx="120" cy="315" r="82"/><circle cx="1080" cy="270" r="140"/><circle cx="1025" cy="540" r="48"/></g>
+</svg>
