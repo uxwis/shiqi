@@ -117,10 +117,12 @@ svg { display: block; }
 .btn { min-height: 42px; padding: 0 17px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; border: 1px solid transparent; border-radius: 11px; background: var(--ink); color: white; font-size: 14px; font-weight: 750; cursor: pointer; transition: .2s ease; }
 .btn:hover { transform: translateY(-1px); box-shadow: var(--shadow-sm); }
 .btn:active { transform: translateY(0); }
+.btn:disabled { opacity: .72; cursor: not-allowed; transform: none; box-shadow: none; }
 .btn svg { width: 17px; height: 17px; }
 .btn-primary { background: var(--accent); }
 .btn-primary:hover { background: var(--accent-dark); }
 .btn-light { background: var(--surface); color: var(--ink); border-color: var(--line); }
+.btn-light:disabled { border-color: #deded7; background: #eeeeea; color: #92948d; }
 .btn-soft { background: var(--surface-2); color: var(--ink); }
 .btn-danger { background: #fff1ef; color: var(--danger); border-color: #f0cac6; }
 .btn-sm { min-height: 34px; padding: 0 12px; font-size: 12px; border-radius: 9px; }

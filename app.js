@@ -1,4 +1,5 @@
 const STORAGE_PREFIX = "shiqi_v2_";
+const VERIFICATION_CODE_COOLDOWN_SECONDS = 60;
 
 export const CATEGORY_META = [
   { name: "AI 对话写作", slug: "writing", icon: "pen", desc: "写作、翻译、知识问答与研究" },
@@ -194,6 +195,10 @@ const state = {
   globalSearchOpen: false,
   globalSearchQuery: "",
   globalSearchDraft: "",
+  verificationCodeCooldowns: {
+    register: 0,
+    reset: 0,
+  },
   currentUser: null,
   route: null,
   bootstrapped: false,
@@ -281,6 +286,43 @@ function getLocal(key, fallback) {
   catch { return fallback; }
 }
 function setLocal(key, value) { localStorage.setItem(storageKey(key), JSON.stringify(value)); }
+
+export function verificationCodeButtonState(deadline = 0, now = Date.now()) {
+  const remaining = Math.max(0, Math.ceil((deadline - now) / 1000));
+  return {
+    disabled: remaining > 0,
+    label: remaining > 0 ? `${remaining} 秒后重试` : "获取验证码",
+    remaining,
+  };
+}
+
+function verificationCodeButtonHTML(purpose) {
+  const buttonState = verificationCodeButtonState(state.verificationCodeCooldowns[purpose]);
+  return `<button class="btn btn-light" type="button" data-action="send-code" data-purpose="${purpose}" aria-live="polite" ${buttonState.disabled ? "disabled" : ""}>${buttonState.label}</button>`;
+}
+
+let verificationCodeTimer = null;
+
+function syncVerificationCodeButtons() {
+  document.querySelectorAll('[data-action="send-code"][data-purpose]').forEach(button => {
+    const buttonState = verificationCodeButtonState(state.verificationCodeCooldowns[button.dataset.purpose]);
+    button.disabled = buttonState.disabled;
+    button.textContent = buttonState.label;
+  });
+
+  const hasActiveCooldown = Object.values(state.verificationCodeCooldowns)
+    .some(deadline => verificationCodeButtonState(deadline).disabled);
+  if (!hasActiveCooldown && verificationCodeTimer) {
+    clearInterval(verificationCodeTimer);
+    verificationCodeTimer = null;
+  }
+}
+
+function startVerificationCodeCooldown(purpose) {
+  state.verificationCodeCooldowns[purpose] = Date.now() + VERIFICATION_CODE_COOLDOWN_SECONDS * 1000;
+  syncVerificationCodeButtons();
+  if (!verificationCodeTimer) verificationCodeTimer = setInterval(syncVerificationCodeButtons, 1000);
+}
 
 async function apiRequest(path, { method = "GET", body } = {}) {
   const response = await fetch(path, {
@@ -774,7 +816,7 @@ function authPage() {
       <form class="auth-form" id="auth-form" data-mode="${state.authMode}">
         ${register ? `<div class="field"><label for="auth-nickname">昵称</label><input class="input" id="auth-nickname" name="nickname" maxlength="20" placeholder="怎么称呼你"></div>` : ""}
         <div class="field"><label for="auth-email">邮箱</label><input class="input" id="auth-email" name="email" type="email" required autocomplete="email" placeholder="name@example.com"></div>
-        ${register ? `<div class="field"><label for="auth-code">邮箱验证码</label><div class="auth-code-row"><input class="input" id="auth-code" name="code" required inputmode="numeric" autocomplete="one-time-code" placeholder="请输入 6 位验证码"><button class="btn btn-light" type="button" data-action="send-code">获取验证码</button></div></div>` : ""}
+        ${register ? `<div class="field"><label for="auth-code">邮箱验证码</label><div class="auth-code-row"><input class="input" id="auth-code" name="code" required inputmode="numeric" autocomplete="one-time-code" placeholder="请输入 6 位验证码">${verificationCodeButtonHTML("register")}</div></div>` : ""}
         <div class="field"><label for="auth-password">密码</label><input class="input" id="auth-password" name="password" type="password" required autocomplete="${register ? "new-password" : "current-password"}" placeholder="10–72 位，包含字母和数字"></div>
         ${register ? `<div class="field"><label for="auth-confirm-password">确认密码</label><input class="input" id="auth-confirm-password" name="confirmPassword" type="password" required autocomplete="new-password" placeholder="再次输入密码"></div><label class="check-row"><input type="checkbox" name="agreement">我已阅读并同意《用户协议》和《隐私政策》</label>` : `<div class="auth-forgot-row"><button type="button" class="comment-action" data-action="forgot-password">忘记密码？</button></div>`}
         <button class="btn btn-primary btn-lg btn-block" type="submit">${register ? "创建账号" : "登录"} ${icon("arrowRight")}</button>
@@ -1091,16 +1133,20 @@ document.addEventListener("click", async event => {
   if (action === "send-code") {
     const form = trigger.closest("form");
     const email = form?.querySelector('[name="email"]')?.value.trim();
+    const purpose = trigger.dataset.purpose || (form?.id === "reset-form" ? "reset" : "register");
     if (!email) return showToast("请先填写有效邮箱", "error");
+    if (verificationCodeButtonState(state.verificationCodeCooldowns[purpose]).disabled) return;
     trigger.disabled = true;
+    trigger.textContent = "发送中…";
     try {
-      const result = await apiRequest("/api/auth/request-code", { method: "POST", body: { email, purpose: form.id === "reset-form" ? "reset" : "register" } });
+      const result = await apiRequest("/api/auth/request-code", { method: "POST", body: { email, purpose } });
+      startVerificationCodeCooldown(purpose);
       showToast(result.developmentCode ? `验证码已发送（开发环境：${result.developmentCode}）` : result.message);
     } catch (error) { showToast(error.message, "error"); }
-    finally { trigger.disabled = false; }
+    finally { syncVerificationCodeButtons(); }
     return;
   }
-  if (action === "forgot-password") return openModal(modalFrame("重置密码", "验证码将发送到你的注册邮箱。", `<form id="reset-form" class="auth-form"><div class="field"><label>邮箱</label><input class="input" name="email" type="email" required autocomplete="email" placeholder="name@example.com"></div><div class="field"><label>验证码</label><div class="auth-code-row"><input class="input" name="code" required inputmode="numeric" autocomplete="one-time-code" placeholder="请输入 6 位验证码"><button class="btn btn-light" type="button" data-action="send-code">获取验证码</button></div></div><div class="field"><label>新密码</label><input class="input" name="password" type="password" required autocomplete="new-password" placeholder="10–72 位，包含字母和数字"></div><button class="btn btn-primary btn-block" type="submit">确认重置</button></form>`));
+  if (action === "forgot-password") return openModal(modalFrame("重置密码", "验证码将发送到你的注册邮箱。", `<form id="reset-form" class="auth-form"><div class="field"><label>邮箱</label><input class="input" name="email" type="email" required autocomplete="email" placeholder="name@example.com"></div><div class="field"><label>验证码</label><div class="auth-code-row"><input class="input" name="code" required inputmode="numeric" autocomplete="one-time-code" placeholder="请输入 6 位验证码">${verificationCodeButtonHTML("reset")}</div></div><div class="field"><label>新密码</label><input class="input" name="password" type="password" required autocomplete="new-password" placeholder="10–72 位，包含字母和数字"></div><button class="btn btn-primary btn-block" type="submit">确认重置</button></form>`));
   if (action === "logout") {
     try { await apiRequest("/api/auth/logout", { method: "POST", body: {} }); } catch {}
     state.currentUser = null;
