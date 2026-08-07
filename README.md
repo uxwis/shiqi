@@ -56,12 +56,16 @@ DATABASE_SSL=true
 PASSWORD_PEPPER=至少32位且长期固定的随机字符串
 ADMIN_EMAIL=你的管理员邮箱
 ADMIN_PASSWORD=初始化时使用的强密码
+EMAIL_PROVIDER=zeabur
+EMAIL_FROM=no-reply@你的已验证发件域名
+ZSEND_API_KEY=Zeabur Email 只发送权限密钥
+
+# 或改用 SMTP：EMAIL_PROVIDER=smtp，并配置以下变量
 SMTP_HOST=邮件服务器
 SMTP_PORT=587
 SMTP_SECURE=false
 SMTP_USER=...
 SMTP_PASSWORD=...
-SMTP_FROM=拾器 <no-reply@你的域名>
 UPLOAD_DRIVER=local
 UPLOAD_DIR=/持久化磁盘/uploads
 TRUST_PROXY=true
@@ -83,7 +87,7 @@ npm start
 - 域名已启用 HTTPS，`APP_ORIGIN` 与浏览器实际访问域名完全一致。
 - PostgreSQL 开启自动备份；数据库连接和 `PASSWORD_PEPPER` 已放入部署平台密钥管理。
 - `UPLOAD_DIR` 挂载的是持久化磁盘并纳入备份，不能使用容器临时文件系统。
-- SMTP 发信域名已配置 SPF、DKIM、DMARC，并实测能收到注册和重置验证码。
+- 发信域名已配置 SPF、DKIM、DMARC，并实测能收到注册和重置验证码；Zeabur Email 使用仅发送权限 API Key，其他供应商可使用 SMTP。
 - 反向代理确实覆盖原始客户端 IP 后才启用 `TRUST_PROXY=true`。
 - 已准备用户协议、隐私政策、举报处置和内容删除流程；接入广告前再按供应商要求补充 Cookie/广告披露与同意管理。
 - 多实例扩容前，把进程内限流迁移到 Redis，并把图片迁移到 S3/R2 等对象存储。
