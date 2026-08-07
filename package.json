@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "node server.mjs",
     "dev:memory": "node scripts/dev-memory.mjs",
-    "prestart": "node scripts/migrate.mjs",
+    "prestart": "node scripts/startup.mjs",
     "start": "node server.mjs",
     "db:migrate": "node scripts/migrate.mjs",
     "db:seed": "node scripts/seed.mjs",

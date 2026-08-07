@@ -56,6 +56,7 @@ DATABASE_SSL=true
 PASSWORD_PEPPER=至少32位且长期固定的随机字符串
 ADMIN_EMAIL=你的管理员邮箱
 ADMIN_PASSWORD=初始化时使用的强密码
+SEED_ON_START=false
 EMAIL_PROVIDER=zeabur
 EMAIL_FROM=no-reply@你的已验证发件域名
 ZSEND_API_KEY=Zeabur Email 只发送权限密钥
@@ -80,7 +81,7 @@ npm run db:seed
 npm start
 ```
 
-以后启动 `npm start` 会自动执行尚未应用的数据库迁移，不会重复覆盖数据。`db:seed` 只需要在首次上线时执行，用于导入初始公开内容和管理员账号。
+以后启动 `npm start` 会自动执行尚未应用的数据库迁移，不会重复覆盖数据。首次上线或灾备恢复时可临时设置 `SEED_ON_START=true`，用于导入初始公开内容和管理员账号；初始化成功后应立即恢复为 `false`。
 
 ### 上线前必须确认
 
