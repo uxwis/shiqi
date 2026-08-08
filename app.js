@@ -446,7 +446,7 @@ function requireLogin(message = "登录后即可继续操作") {
 }
 
 function brandHTML() {
-  return `<span class="brand-mark"><i></i><i></i><i></i><i></i></span><span class="brand-text">拾器 <small>SHIQI</small></span>`;
+  return `<img class="brand-logo" src="./logo.svg" alt="拾器 SHIQI" width="1264" height="438">`;
 }
 
 function headerHTML() {
