@@ -503,8 +503,8 @@ function searchPage() {
     <div class="container">
       <form class="global-search-bar" id="global-search-form">
         ${icon("search")}
-        <input id="global-search-input" name="q" value="${escapeHTML(query)}" autocomplete="off" autofocus placeholder="搜索 AI 工具、软件、文章或标签" aria-label="输入搜索关键词">
-        ${query ? `<button class="global-search-clear" type="button" data-action="clear-global-search" aria-label="清空搜索">${icon("x")}</button>` : ""}
+        <input id="global-search-input" name="q" value="${escapeHTML(query)}" autocomplete="off" placeholder="搜索 AI 工具、软件、文章或标签" aria-label="输入搜索关键词">
+        <button class="global-search-clear ${query ? "" : "hidden"}" type="button" data-action="clear-global-search" aria-label="清空搜索">${icon("x")}</button>
         <button class="btn btn-dark" type="submit">搜索</button>
       </form>
       <div class="global-search-results" id="global-search-results">${globalSearchResultsHTML(query)}</div>
@@ -512,20 +512,47 @@ function searchPage() {
   </main>`;
 }
 
+function focusSearchInput() {
+  const input = document.querySelector("#global-search-input");
+  if (!(input instanceof HTMLInputElement)) return;
+  input.focus({ preventScroll: true });
+  input.setSelectionRange(input.value.length, input.value.length);
+  window.getSelection()?.removeAllRanges();
+}
+
+function releaseSearchFocus() {
+  const activeElement = document.activeElement;
+  if (activeElement instanceof HTMLElement && activeElement !== document.body) activeElement.blur();
+  window.getSelection()?.removeAllRanges();
+}
+
 function openSearchPage(query = "") {
   if (state.route?.path !== "/search") state.searchReturnHash = location.hash || "#/";
+  releaseSearchFocus();
   navigate("/search", query ? { q: query } : null);
 }
 
-function replaceSearchQuery(query = "") {
+function updateSearchPage(query = "") {
+  const normalizedQuery = query.trim();
   const params = new URLSearchParams();
-  if (query) params.set("q", query);
+  if (normalizedQuery) params.set("q", normalizedQuery);
   const queryString = params.toString();
   history.replaceState(null, "", `#/search${queryString ? `?${queryString}` : ""}`);
-  renderApp(true);
+  state.route = parseRoute();
+
+  const input = document.querySelector("#global-search-input");
+  if (input instanceof HTMLInputElement) input.value = normalizedQuery;
+  focusSearchInput();
+  document.querySelector(".global-search-clear")?.classList.toggle("hidden", !normalizedQuery);
+
+  const results = document.querySelector("#global-search-results");
+  if (results) results.innerHTML = globalSearchResultsHTML(normalizedQuery);
+  document.title = pageTitle();
+  window.scrollTo({ top: 0, behavior: "instant" });
 }
 
 function closeSearchPage() {
+  releaseSearchFocus();
   if (state.searchReturnHash) {
     state.searchReturnHash = null;
     history.back();
@@ -992,6 +1019,7 @@ function renderApp(scrollTop = false) {
   document.title = pageTitle();
   document.querySelector("#main-nav")?.classList.remove("open");
   if (scrollTop) window.scrollTo({ top: 0, behavior: "instant" });
+  if (state.route.path === "/search") requestAnimationFrame(focusSearchInput);
 }
 
 function pageTitle() {
@@ -1034,7 +1062,7 @@ document.addEventListener("click", async event => {
     else openSearchPage("");
     return;
   }
-  if (action === "clear-global-search") return replaceSearchQuery("");
+  if (action === "clear-global-search") return updateSearchPage("");
   if (action === "go-profile") return navigate("/profile");
   if (action === "go-login") return navigate("/auth");
   if (action === "go-home") return navigate("/");
@@ -1204,16 +1232,7 @@ document.addEventListener("click", async event => {
 
 document.addEventListener("input", event => {
   if (event.target.id !== "global-search-input") return;
-  const clearButton = document.querySelector(".global-search-clear");
-  if (event.target.value && !clearButton) {
-    const button = document.createElement("button");
-    button.className = "global-search-clear";
-    button.dataset.action = "clear-global-search";
-    button.type = "button";
-    button.setAttribute("aria-label", "清空搜索");
-    button.innerHTML = icon("x");
-    event.target.after(button);
-  } else if (!event.target.value) clearButton?.remove();
+  document.querySelector(".global-search-clear")?.classList.toggle("hidden", !event.target.value);
 });
 
 document.addEventListener("change", async event => {
@@ -1250,7 +1269,7 @@ document.addEventListener("submit", async event => {
     if (!query) return form.querySelector("input")?.focus();
     const history = getLocal("searchHistory", []).filter(value => value !== query);
     setLocal("searchHistory", [query, ...history].slice(0,10));
-    return replaceSearchQuery(query);
+    return updateSearchPage(query);
   }
   if (form.id === "home-search") {
     const query = String(data.get("q") || "").trim();
