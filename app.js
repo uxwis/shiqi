@@ -192,9 +192,7 @@ const state = {
   articleImagesDraft: [],
   submitType: "tool",
   toolChannel: "AI工具",
-  globalSearchOpen: false,
-  globalSearchQuery: "",
-  globalSearchDraft: "",
+  searchReturnHash: null,
   verificationCodeCooldowns: {
     register: 0,
     reset: 0,
@@ -454,6 +452,7 @@ function headerHTML() {
   const isResource = route.startsWith("/resources") || route.startsWith("/resource/");
   const isLearning = route.startsWith("/learning") || route.startsWith("/article/");
   const isSoftware = route.startsWith("/software");
+  const isSearch = route === "/search";
   const user = state.currentUser;
   return `<header class="site-header">
     <div class="container header-inner">
@@ -466,7 +465,7 @@ function headerHTML() {
         ${user?.role === "admin" ? `<a class="nav-link ${route === "/admin" ? "active" : ""}" href="#/admin">管理后台</a>` : ""}
       </nav>
       <div class="header-actions">
-        <button class="icon-btn ${state.globalSearchOpen ? "active" : ""}" data-action="toggle-global-search" aria-label="${state.globalSearchOpen ? "关闭搜索" : "全站搜索"}" aria-expanded="${state.globalSearchOpen}">${icon(state.globalSearchOpen ? "x" : "search")}</button>
+        <button class="icon-btn ${isSearch ? "active" : ""}" data-action="toggle-global-search" aria-label="${isSearch ? "关闭搜索" : "全站搜索"}">${icon(isSearch ? "x" : "search")}</button>
         ${user ? `<button class="user-chip" data-action="go-profile"><span class="avatar">${escapeHTML(initials(user.nickname))}</span><span>${escapeHTML(user.nickname)}</span></button>` : `<a class="btn btn-light" href="#/auth">登录 / 注册</a>`}
         <button class="icon-btn mobile-toggle" data-action="toggle-menu" aria-label="打开菜单">${icon("menu")}</button>
       </div>
@@ -498,33 +497,39 @@ function globalSearchResultsHTML(query = "") {
     </section>`;
 }
 
-function globalSearchHTML() {
-  if (!state.globalSearchOpen) return "";
-  return `<div class="global-search-backdrop" data-action="close-global-search-backdrop">
-    <section class="global-search-panel" role="dialog" aria-modal="true" aria-label="全站搜索">
-      <div class="container">
-        <form class="global-search-bar" id="global-search-form">
-          ${icon("search")}
-          <input id="global-search-input" name="q" value="${escapeHTML(state.globalSearchDraft)}" autocomplete="off" placeholder="搜索 AI 工具、软件、文章或标签" aria-label="输入搜索关键词">
-          ${state.globalSearchDraft ? `<button class="global-search-clear" type="button" data-action="close-global-search" aria-label="关闭搜索">${icon("x")}</button>` : ""}
-          <button class="btn btn-dark" type="submit">搜索</button>
-        </form>
-        <div class="global-search-results" id="global-search-results">${globalSearchResultsHTML(state.globalSearchQuery)}</div>
-      </div>
-    </section>
-  </div>`;
+function searchPage() {
+  const query = (state.route.params.get("q") || "").trim();
+  return `<main class="main global-search-page">
+    <div class="container">
+      <form class="global-search-bar" id="global-search-form">
+        ${icon("search")}
+        <input id="global-search-input" name="q" value="${escapeHTML(query)}" autocomplete="off" autofocus placeholder="搜索 AI 工具、软件、文章或标签" aria-label="输入搜索关键词">
+        ${query ? `<button class="global-search-clear" type="button" data-action="clear-global-search" aria-label="清空搜索">${icon("x")}</button>` : ""}
+        <button class="btn btn-dark" type="submit">搜索</button>
+      </form>
+      <div class="global-search-results" id="global-search-results">${globalSearchResultsHTML(query)}</div>
+    </div>
+  </main>`;
 }
 
-function openGlobalSearch(query = state.globalSearchQuery) {
-  state.globalSearchOpen = true;
-  state.globalSearchQuery = query;
-  state.globalSearchDraft = query;
-  renderApp(false);
-  requestAnimationFrame(() => {
-    const input = document.querySelector("#global-search-input");
-    input?.focus();
-    input?.setSelectionRange(input.value.length, input.value.length);
-  });
+function openSearchPage(query = "") {
+  if (state.route?.path !== "/search") state.searchReturnHash = location.hash || "#/";
+  navigate("/search", query ? { q: query } : null);
+}
+
+function replaceSearchQuery(query = "") {
+  const params = new URLSearchParams();
+  if (query) params.set("q", query);
+  const queryString = params.toString();
+  history.replaceState(null, "", `#/search${queryString ? `?${queryString}` : ""}`);
+  renderApp(true);
+}
+
+function closeSearchPage() {
+  if (state.searchReturnHash) {
+    state.searchReturnHash = null;
+    history.back();
+  } else navigate("/");
 }
 
 function footerHTML() {
@@ -971,6 +976,7 @@ function renderApp(scrollTop = false) {
   if (state.route.path === "/submit" && state.route.params.get("type")) state.submitType = state.route.params.get("type") === "article" ? "article" : "tool";
   let page;
   if (state.route.path === "/") page = homePage();
+  else if (state.route.path === "/search") page = searchPage();
   else if (state.route.path === "/resources") page = resourcesPage();
   else if (state.route.path === "/software") page = softwarePage();
   else if (state.route.path === "/learning") page = learningPage();
@@ -982,14 +988,17 @@ function renderApp(scrollTop = false) {
   else if (state.route.path === "/admin") page = adminPage();
   else page = notFoundPage();
   const hideFooter = ["/auth", "/admin"].includes(state.route.path);
-  document.querySelector("#app").innerHTML = `<div class="app-shell">${headerHTML()}${globalSearchHTML()}${page}${hideFooter ? "" : footerHTML()}</div>`;
-  document.body.classList.toggle("search-open", state.globalSearchOpen);
+  document.querySelector("#app").innerHTML = `<div class="app-shell">${headerHTML()}${page}${hideFooter ? "" : footerHTML()}</div>`;
   document.title = pageTitle();
   document.querySelector("#main-nav")?.classList.remove("open");
   if (scrollTop) window.scrollTo({ top: 0, behavior: "instant" });
 }
 
 function pageTitle() {
+  if (state.route.path === "/search") {
+    const query = (state.route.params.get("q") || "").trim();
+    return query ? `搜索“${query}” · 拾器` : "全站搜索 · 拾器";
+  }
   if (state.route.parts[0] === "resource") {
     const item = resources(true).find(r => r.id === state.route.parts[1]);
     return item ? `${item.name} · 拾器` : "页面未找到 · 拾器";
@@ -1018,20 +1027,14 @@ document.addEventListener("click", async event => {
   const action = trigger.dataset.action;
   const id = trigger.dataset.id;
   if (action === "toggle-menu") return document.querySelector("#main-nav")?.classList.toggle("open");
-  if (action === "open-resource") { state.globalSearchOpen = false; return navigate(`/resource/${id}`); }
-  if (action === "open-article") { state.globalSearchOpen = false; return navigate(`/article/${id}`); }
+  if (action === "open-resource") return navigate(`/resource/${id}`);
+  if (action === "open-article") return navigate(`/article/${id}`);
   if (action === "toggle-global-search") {
-    if (state.globalSearchOpen) {
-      state.globalSearchOpen = false;
-      renderApp(false);
-    } else openGlobalSearch("");
+    if (state.route.path === "/search") closeSearchPage();
+    else openSearchPage("");
     return;
   }
-  if (action === "close-global-search" || (action === "close-global-search-backdrop" && event.target === trigger)) {
-    state.globalSearchOpen = false;
-    renderApp(false);
-    return;
-  }
+  if (action === "clear-global-search") return replaceSearchQuery("");
   if (action === "go-profile") return navigate("/profile");
   if (action === "go-login") return navigate("/auth");
   if (action === "go-home") return navigate("/");
@@ -1042,7 +1045,7 @@ document.addEventListener("click", async event => {
     const query = trigger.dataset.query;
     const history = getLocal("searchHistory", []).filter(v => v !== query);
     setLocal("searchHistory", [query, ...history].slice(0, 10));
-    return openGlobalSearch(query);
+    return openSearchPage(query);
   }
   if (action === "set-category") return updateRouteParams({ category: trigger.dataset.value });
   if (action === "set-software-category") return updateRouteParams({ category: trigger.dataset.value });
@@ -1201,17 +1204,16 @@ document.addEventListener("click", async event => {
 
 document.addEventListener("input", event => {
   if (event.target.id !== "global-search-input") return;
-  state.globalSearchDraft = event.target.value;
   const clearButton = document.querySelector(".global-search-clear");
-  if (state.globalSearchDraft && !clearButton) {
+  if (event.target.value && !clearButton) {
     const button = document.createElement("button");
     button.className = "global-search-clear";
-    button.dataset.action = "close-global-search";
+    button.dataset.action = "clear-global-search";
     button.type = "button";
-    button.setAttribute("aria-label", "关闭搜索");
+    button.setAttribute("aria-label", "清空搜索");
     button.innerHTML = icon("x");
     event.target.after(button);
-  } else if (!state.globalSearchDraft) clearButton?.remove();
+  } else if (!event.target.value) clearButton?.remove();
 });
 
 document.addEventListener("change", async event => {
@@ -1246,20 +1248,16 @@ document.addEventListener("submit", async event => {
   if (form.id === "global-search-form") {
     const query = String(data.get("q") || "").trim();
     if (!query) return form.querySelector("input")?.focus();
-    state.globalSearchQuery = query;
-    state.globalSearchDraft = query;
     const history = getLocal("searchHistory", []).filter(value => value !== query);
     setLocal("searchHistory", [query, ...history].slice(0,10));
-    const results = document.querySelector("#global-search-results");
-    if (results) results.innerHTML = globalSearchResultsHTML(query);
-    return;
+    return replaceSearchQuery(query);
   }
   if (form.id === "home-search") {
     const query = String(data.get("q") || "").trim();
     if (!query) return form.querySelector("input")?.focus();
     const history = getLocal("searchHistory", []).filter(v => v !== query);
     setLocal("searchHistory", [query, ...history].slice(0,10));
-    return openGlobalSearch(query);
+    return openSearchPage(query);
   }
   if (form.id === "auth-form") {
     const mode = form.dataset.mode;
@@ -1433,10 +1431,8 @@ window.addEventListener("hashchange", async () => {
 });
 window.addEventListener("keydown", event => {
   if (event.key !== "Escape") return;
-  if (state.globalSearchOpen) {
-    state.globalSearchOpen = false;
-    renderApp(false);
-  } else closeModal();
+  if (state.route.path === "/search") closeSearchPage();
+  else closeModal();
 });
 
 async function initializeApp() {

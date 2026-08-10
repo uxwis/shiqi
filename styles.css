@@ -71,8 +71,7 @@ svg { display: block; }
 .mobile-toggle { display: none; }
 
 /* global search */
-.global-search-backdrop { position: fixed; inset: 74px 0 0; z-index: 39; overflow-y: auto; overscroll-behavior: contain; background: rgba(25,26,23,.48); backdrop-filter: blur(5px); animation: fadeIn .18s ease; }
-.global-search-panel { min-height: 100%; padding: 24px 0 64px; background: var(--bg); box-shadow: 0 24px 70px rgba(25,26,23,.18); animation: searchDrop .22s ease; }
+.global-search-page { padding: 24px 0 80px; background: var(--bg); }
 .global-search-bar { height: 62px; display: flex; align-items: center; gap: 12px; padding: 8px 9px 8px 20px; border-radius: 17px; background: var(--surface); box-shadow: var(--shadow-sm); }
 .global-search-bar > svg { width: 21px; height: 21px; flex: none; color: var(--muted); }
 .global-search-bar input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 16px; }
@@ -107,7 +106,6 @@ svg { display: block; }
 .global-search-idle svg { width: 30px; height: 30px; color: var(--ink); }
 .global-search-idle h2 { margin: 2px 0 0; color: var(--ink); font-size: 22px; letter-spacing: -.02em; }
 .global-search-idle p { max-width: 450px; margin: 0; font-size: 12px; line-height: 1.7; }
-@keyframes searchDrop { from { opacity: 0; transform: translateY(-12px); } }
 
 /* buttons and forms */
 .btn { min-height: 42px; padding: 0 17px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; border: 1px solid transparent; border-radius: 11px; background: var(--ink); color: white; font-size: 14px; font-weight: 600; cursor: pointer; transition: .2s ease; }
@@ -595,8 +593,7 @@ svg { display: block; }
   .user-chip > span:not(.avatar) { display: none; }
   .header-inner { height: 66px; }
   .main-nav { top: 66px; }
-  .global-search-backdrop { inset: 66px 0 0; }
-  .global-search-panel { padding: 15px 0 46px; }
+  .global-search-page { padding: 15px 0 56px; }
   .global-search-bar { height: 56px; padding-left: 15px; gap: 8px; }
   .global-search-bar .btn { min-height: 38px; padding: 0 13px; }
   .global-search-summary { align-items: flex-start; flex-direction: column; gap: 5px; }
