@@ -36,6 +36,7 @@ function resource(row) {
     name: row.name,
     logo: row.logo,
     icon: row.icon_url || "",
+    coverImage: row.cover_image || "",
     category: row.category,
     subcategory: row.subcategory,
     tags: json(row.tags),
@@ -309,9 +310,9 @@ export function createRepository(db, { now = () => new Date() } = {}) {
       const id = uid("resource");
       const submissionId = uid("s");
       const result = await client.query(`INSERT INTO resources
-        (id,name,logo,category,subcategory,tags,color,logo_color,short_description,description,features,tutorial,scenarios,source,user_id,website)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *`,
-        [id,input.name,input.logo,input.category,input.subcategory,JSON.stringify(input.tags),input.color,input.logoColor,input.short,input.description,JSON.stringify(input.features),JSON.stringify(input.tutorial),JSON.stringify(input.scenarios),user.nickname,user.id,input.website]);
+        (id,name,logo,category,subcategory,tags,color,logo_color,short_description,description,features,tutorial,scenarios,source,user_id,website,cover_image)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *`,
+        [id,input.name,input.logo,input.category,input.subcategory,JSON.stringify(input.tags),input.color,input.logoColor,input.short,input.description,JSON.stringify(input.features),JSON.stringify(input.tutorial),JSON.stringify(input.scenarios),user.nickname,user.id,input.website,input.coverImage || ""]);
       await client.query(`INSERT INTO submissions (id,target_id,content_type,user_id,name,url,category,summary,reason) VALUES ($1,$2,'tool',$3,$4,$5,$6,$7,$8)`,
         [submissionId,id,user.id,input.name,input.website,input.subcategory,input.short,input.reason]);
       return resource(result.rows[0]);
@@ -347,8 +348,8 @@ export function createRepository(db, { now = () => new Date() } = {}) {
           [input.title,input.excerpt,input.category,JSON.stringify(input.tags),JSON.stringify(input.body),input.readTime,current.target_id]);
         await client.query("UPDATE submissions SET name=$1,category=$2,summary=$3,updated_at=CURRENT_TIMESTAMP WHERE id=$4", [input.title,input.category,input.excerpt,submissionId]);
       } else {
-        await client.query(`UPDATE resources SET name=$1,logo=$2,website=$3,category=$4,subcategory=$5,tags=$6,short_description=$7,description=$8,scenarios=$9,updated_at=CURRENT_TIMESTAMP WHERE id=$10`,
-          [input.name,input.logo,input.website,input.channel,input.category,JSON.stringify(input.tags),input.short,input.description,JSON.stringify(input.scenarios),current.target_id]);
+        await client.query(`UPDATE resources SET name=$1,logo=$2,website=$3,category=$4,subcategory=$5,tags=$6,short_description=$7,description=$8,scenarios=$9,cover_image=COALESCE($11,cover_image),updated_at=CURRENT_TIMESTAMP WHERE id=$10`,
+          [input.name,input.logo,input.website,input.channel,input.category,JSON.stringify(input.tags),input.short,input.description,JSON.stringify(input.scenarios),current.target_id,input.coverImage ?? null]);
         await client.query("UPDATE submissions SET name=$1,url=$2,category=$3,summary=$4,reason=$5,updated_at=CURRENT_TIMESTAMP WHERE id=$6", [input.name,input.website,input.category,input.short,input.reason,submissionId]);
       }
       return current.target_id;
@@ -413,9 +414,9 @@ export function createRepository(db, { now = () => new Date() } = {}) {
     return db.transaction(async client => {
       const result = await client.query(`UPDATE resources SET
         name=$1,logo=$2,website=$3,category=$4,subcategory=$5,tags=$6,
-        short_description=$7,description=$8,status=$9,updated_at=CURRENT_TIMESTAMP
+        short_description=$7,description=$8,status=$9,cover_image=COALESCE($11,cover_image),updated_at=CURRENT_TIMESTAMP
         WHERE id=$10 RETURNING *`,
-        [input.name,input.logo,input.website,input.category,input.subcategory,JSON.stringify(input.tags),input.short,input.description,input.status,resourceId]);
+        [input.name,input.logo,input.website,input.category,input.subcategory,JSON.stringify(input.tags),input.short,input.description,input.status,resourceId,input.coverImage ?? null]);
       if (!result.rows[0]) throw Object.assign(new Error("资源不存在"), { statusCode: 404 });
       await client.query("INSERT INTO audit_logs (id,actor_user_id,action,target_type,target_id) VALUES ($1,$2,'resource.update','resource',$3)", [uid("audit"),actor,resourceId]);
       return resource(result.rows[0]);

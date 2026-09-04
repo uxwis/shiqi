@@ -9,6 +9,16 @@ const IMAGE_TYPES = {
   webp: { extension: "webp", magic: buffer => buffer.subarray(0, 4).toString() === "RIFF" && buffer.subarray(8, 12).toString() === "WEBP" },
 };
 
+export function cleanUploadedImage(value) {
+  if (value === undefined) return undefined;
+  if (value === null || value === "") return "";
+  const prefix = `${config.upload.publicPath.replace(/\/$/, "")}/`;
+  if (typeof value !== "string" || !value.startsWith(prefix) || !/^[A-Za-z0-9_-]+\.(?:jpe?g|png|webp)$/.test(value.slice(prefix.length))) {
+    throw Object.assign(new Error("请选择已上传的 JPG、PNG 或 WebP 封面图片"), { statusCode: 400 });
+  }
+  return value;
+}
+
 export async function storeImageDataURL(dataURL) {
   if (config.upload.driver !== "local") throw new Error(`暂不支持的上传驱动：${config.upload.driver}`);
   const match = /^data:image\/(jpeg|png|webp);base64,([A-Za-z0-9+/=]+)$/.exec(String(dataURL || ""));

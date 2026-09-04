@@ -186,29 +186,46 @@ export const SEED_REPORTS = [
 export const TOOL_TYPES = ["AI工具", "软件工具", "在线工具"];
 export function toolType(item) { return item.category === "软件工具" && item.subcategory === "在线工具" ? "在线工具" : item.category; }
 const coverCache = new Map();
+const resourceCoverDrafts = new Map();
 let coverObserver;
+
+function showResourceCoverImage(target, src, name) {
+  return new Promise(resolve => {
+    const img = new Image();
+    img.className = "resource-og-image";
+    img.alt = `${name} 封面`;
+    img.decoding = "async";
+    img.referrerPolicy = "no-referrer";
+    img.onload = () => {
+      const loaded = img.naturalWidth > 0 && target.isConnected;
+      if (loaded) target.classList.add("has-og-image");
+      else img.remove();
+      resolve(loaded);
+    };
+    img.onerror = () => { img.remove(); resolve(false); };
+    target.appendChild(img);
+    img.src = src;
+  });
+}
+
+async function loadResourceCover(target, item) {
+  if (item.coverImage && await showResourceCoverImage(target, item.coverImage, item.name)) return;
+  if (!target.isConnected) return;
+  const key = `${item.id}:${item.website}`;
+  if (!coverCache.has(key)) coverCache.set(key, apiRequest(`/api/resources/${encodeURIComponent(item.id)}/metadata`).catch(() => ({ image: "" })));
+  const metadata = await coverCache.get(key);
+  if (metadata.image && metadata.image !== item.coverImage && target.isConnected) await showResourceCoverImage(target, metadata.image, item.name);
+}
+
 function hydrateResourceCovers() {
   coverObserver?.disconnect();
   coverObserver = new IntersectionObserver(entries => {
     entries.filter(entry => entry.isIntersecting).forEach(({ target }) => {
       coverObserver.unobserve(target);
-      const id = target.dataset.coverResource;
-      const item = resources().find(item => item.id === id);
-      if (!item) return;
-      const key = `${id}:${item.website}`;
-      if (!coverCache.has(key)) coverCache.set(key, apiRequest(`/api/resources/${encodeURIComponent(id)}/metadata`).catch(() => ({ image: "" })));
-      coverCache.get(key).then(metadata => {
-        if (!metadata.image || !target.isConnected) return;
-        const img = new Image();
-        img.className = "resource-og-image";
-        img.alt = `${item.name} 官网预览`;
-        img.decoding = "async";
-        img.referrerPolicy = "no-referrer";
-        img.onload = () => { if (img.naturalWidth > 0) target.classList.add("has-og-image"); };
-        img.onerror = () => img.remove();
-        img.src = metadata.image;
-        target.appendChild(img);
-      });
+      const item = resources().find(item => item.id === target.dataset.coverResource);
+      if (!item || target.dataset.coverStarted) return;
+      target.dataset.coverStarted = "true";
+      loadResourceCover(target, item);
     });
   }, { rootMargin: "100px" });
   document.querySelectorAll("[data-cover-resource]").forEach(element => coverObserver.observe(element));
@@ -867,15 +884,15 @@ function detailPage(id) {
   const favorite = isFavorite(id);
   const backPath = "/resources";
   const backLabel = "返回工具资源";
+  const resourceTags = [...new Set([item.subcategory, ...(item.tags || []), ...(item.scenarios || [])].filter(value => typeof value === "string").map(value => value.trim()).filter(Boolean))];
   return `<main class="main"><div class="container page">
     <div class="back-row"><a class="back-link" href="#${backPath}">${icon("arrowLeft")} ${backLabel}</a></div>
     <section class="detail-hero">
-      <div class="detail-cover" style="--card-bg:${item.color};--logo-color:${item.logoColor}">${resourceLogo(item)}</div>
+      <div class="detail-cover" style="--card-bg:${item.color};--logo-color:${item.logoColor}" data-cover-resource="${escapeHTML(item.id)}">${resourceLogo(item)}</div>
       <div class="detail-main">
-        <div class="tag-row"><span class="tag primary">${escapeHTML(item.subcategory)}</span>${item.tags.slice(0,3).map(t => `<span class="tag">${escapeHTML(t)}</span>`).join("")}</div>
         <h1>${escapeHTML(item.name)}</h1><p class="detail-lead">${escapeHTML(item.short)}</p>
         <div class="detail-stats"><span>${icon("star")} <strong>${item.rating.toFixed(1)}</strong></span><span>${icon("eye")} ${item.views.toLocaleString("zh-CN")} 次浏览</span><span>${icon("clock")} ${item.updated} 更新</span></div>
-        <div class="detail-actions"><button class="btn btn-primary btn-lg" data-action="visit-resource" data-id="${item.id}">访问官网 ${icon("external")}</button><button class="btn btn-light btn-lg favorite-action ${favorite ? "active" : ""}" data-action="toggle-favorite" data-id="${item.id}" data-type="resource">${icon("heart")} ${favorite ? "已收藏" : "收藏"}</button><button class="btn btn-light btn-lg" data-action="share-resource" data-id="${item.id}">${icon("share")} 分享</button></div><a class="detail-url" href="${escapeHTML(item.website)}" target="_blank" rel="noopener noreferrer">${escapeHTML(item.website)} ${icon("external")}</a>
+        <div class="detail-actions"><button class="btn btn-primary btn-lg" data-action="visit-resource" data-id="${item.id}">访问官网 ${icon("external")}</button><button class="btn btn-light btn-lg favorite-action ${favorite ? "active" : ""}" data-action="toggle-favorite" data-id="${item.id}" data-type="resource">${icon("heart")} ${favorite ? "已收藏" : "收藏"}</button><button class="btn btn-light btn-lg" data-action="share-resource" data-id="${item.id}">${icon("share")} 分享</button></div>
       </div>
     </section>
     <div class="detail-layout">
@@ -892,7 +909,7 @@ function detailPage(id) {
         <section class="section-tight"><div class="section-head"><div><p class="eyebrow">YOU MAY ALSO LIKE</p><h2 class="section-title related-title">同类好工具</h2></div></div><div class="resource-grid">${related.map(r => resourceCard(r)).join("")}</div></section>
       </div>
       <aside class="detail-sidebar">
-        <section class="side-card detail-info-card"><h3>资源信息</h3><div class="info-list"><div class="info-row"><span>发布者</span><strong>${escapeHTML(item.source)}</strong></div><div class="info-row"><span>内容频道</span><strong>${escapeHTML(toolType(item))}</strong></div></div><div class="detail-scenarios"><h4>适用场景</h4><div class="tag-row">${item.scenarios.map(t => `<span class="tag">${escapeHTML(t)}</span>`).join("")}</div></div><button class="report-link" data-action="open-report" data-id="${item.id}" data-type="resource">${icon("alert")} 链接失效、信息错误或内容违规？提交反馈</button></section>
+        <section class="side-card detail-info-card"><h3>资源信息</h3><div class="info-list"><div class="info-row"><span>发布者</span><strong>${escapeHTML(item.source)}</strong></div><div class="info-row"><span>内容频道</span><strong>${escapeHTML(toolType(item))}</strong></div></div>${resourceTags.length ? `<div class="detail-tags"><h4>资源标签</h4><div class="tag-row">${resourceTags.map(tag => `<span class="tag">${escapeHTML(tag)}</span>`).join("")}</div></div>` : ""}<button class="report-link" data-action="open-report" data-id="${item.id}" data-type="resource">${icon("alert")} 链接失效、信息错误或内容违规？提交反馈</button></section>
       </aside>
     </div>
   </div></main>`;
@@ -966,6 +983,43 @@ function articleImagePreviewHTML() {
   return state.articleImagesDraft.map((src, index) => `<figure><img src="${escapeHTML(src)}" alt="文章配图预览 ${index + 1}"><button type="button" data-action="remove-article-image" data-index="${index}" aria-label="移除第 ${index + 1} 张图片">${icon("x")}</button><figcaption>${index === 0 ? "文章头图" : `正文配图 ${index}`}</figcaption></figure>`).join("");
 }
 
+function resourceCoverPreviewHTML(image) {
+  return image ? `<figure><img src="${escapeHTML(image)}" alt="工具封面预览"><button type="button" data-action="remove-resource-cover" aria-label="移除工具封面">${icon("x")}</button></figure>` : "";
+}
+
+function resourceCoverFieldHTML(scope, initialImage) {
+  if (initialImage !== undefined || !resourceCoverDrafts.has(scope)) resourceCoverDrafts.set(scope, { image: initialImage || "", reading: null });
+  const draft = resourceCoverDrafts.get(scope);
+  return `<div class="field wide" data-resource-cover-field="${escapeHTML(scope)}"><label for="${escapeHTML(scope)}-input">OG 封面图（选填）</label><label class="article-upload-zone" for="${escapeHTML(scope)}-input">${icon("upload")}<span><strong>选择封面图片</strong><small>支持 JPG、PNG、WebP，最多 1 张，500KB 以内</small></span><input class="hidden" id="${escapeHTML(scope)}-input" data-resource-cover-input type="file" accept="image/jpeg,image/png,image/webp"></label><div class="article-image-preview resource-cover-preview" data-resource-cover-preview>${resourceCoverPreviewHTML(draft.image)}</div><p class="field-hint">建议使用 16:10 横图。上传后优先作为列表和详情页封面；留空则自动读取网站 OG 图。</p></div>`;
+}
+
+function refreshResourceCoverPreview(scope) {
+  document.querySelectorAll("[data-resource-cover-field]").forEach(field => {
+    if (field.dataset.resourceCoverField !== scope) return;
+    const preview = field.querySelector("[data-resource-cover-preview]");
+    preview.innerHTML = resourceCoverPreviewHTML(resourceCoverDrafts.get(scope)?.image || "");
+    const removeButton = preview.querySelector("button");
+    if (removeButton) removeButton.disabled = field.closest("form")?.dataset.submitting === "true";
+  });
+}
+
+function setResourceFormBusy(form, busy) {
+  form.dataset.submitting = String(busy);
+  form.querySelectorAll('[type="submit"], [data-resource-cover-input], [data-action="remove-resource-cover"]').forEach(element => { element.disabled = busy; });
+}
+
+async function uploadResourceCover(form) {
+  const scope = form.querySelector("[data-resource-cover-field]").dataset.resourceCoverField;
+  const draft = resourceCoverDrafts.get(scope);
+  if (draft.reading) await draft.reading;
+  if (draft.image.startsWith("data:")) {
+    const uploaded = await apiRequest("/api/uploads/images", { method: "POST", body: { images: [draft.image] } });
+    draft.image = uploaded.images[0];
+    refreshResourceCoverPreview(scope);
+  }
+  return draft.image;
+}
+
 function submitPage() {
   if (!state.currentUser) return `<main class="main"><div class="container page">${emptyState("登录后发布内容", "登录后即可直接发布工具或学习文章，不需要等待审核。", "去登录", "go-login")}</div></main>`;
   const isArticle = state.submitType === "article";
@@ -982,6 +1036,7 @@ function submitPage() {
       <div class="field wide"><label for="publish-tool-type">工具类型 *</label><select class="select" id="publish-tool-type">${TOOL_TYPES.map(value => `<option ${state.toolChannel === value ? "selected" : ""}>${value}</option>`).join("")}</select></div>
       <div class="field"><label>工具名称 *</label><input class="input" name="name" required maxlength="50" placeholder="例如：一款好用的工具"></div>
       <div class="field"><label>官网 / 项目链接 *</label><input class="input" name="url" type="url" pattern="https?://.*" required placeholder="https://"></div>
+      ${resourceCoverFieldHTML("publish-tool-cover")}
       <div class="field wide"><label>标签</label><input class="input" name="tags" maxlength="60" placeholder="用逗号分隔，例如：图片处理，效率"></div>
       <div class="field wide"><label>一句话介绍（选填）</label><textarea class="textarea compact" name="summary" maxlength="120" placeholder="它主要解决什么问题？适合谁使用？"></textarea></div>
       <div class="field wide"><label>详细体验 *</label><textarea class="textarea" name="reason" required minlength="20" maxlength="600" placeholder="分享真实使用场景、主要亮点、使用步骤或需要注意的地方。正文中的完整链接会在详情页自动变成外链。"></textarea></div>
@@ -1048,7 +1103,7 @@ function submissionEditorModal(submissionId) {
   const articleCategories = ["AI 入门","学习方法","工具教程","研究方法","安全指南","内容创作","基础技能","数字生活"];
   const form = isArticle
     ? `<form id="user-submission-form" class="form-grid" data-submission-id="${submission.id}" data-target-id="${target.id}" data-content-type="article"><div class="field wide"><label>文章标题 *</label><input class="input" name="title" required maxlength="80" value="${escapeHTML(target.title)}"></div><div class="field"><label>文章分类 *</label><select class="select" name="category">${articleCategories.map(value => `<option ${target.category === value ? "selected" : ""}>${value}</option>`).join("")}</select></div><div class="field"><label>标签</label><input class="input" name="tags" maxlength="60" value="${escapeHTML(target.tags.join("，"))}"></div><div class="field wide"><label>文章摘要（选填）</label><textarea class="textarea compact" name="excerpt" maxlength="160">${escapeHTML(target.excerpt)}</textarea></div><div class="field wide"><label>正文 *</label>${richEditorHTML(target.body)}<p class="field-hint">现有文章配图会继续保留。</p></div><div class="wide modal-form-actions"><button class="btn btn-light" type="button" data-action="close-modal">取消</button><button class="btn btn-primary" type="submit">保存并更新前台</button></div></form>`
-    : `<form id="user-submission-form" class="form-grid" data-submission-id="${submission.id}" data-target-id="${target.id}" data-content-type="tool"><div class="field"><label>工具名称 *</label><input class="input" name="name" required maxlength="50" value="${escapeHTML(target.name)}"></div><div class="field"><label>官网 / 项目链接 *</label><input class="input" name="url" type="url" pattern="https?://.*" required value="${escapeHTML(target.website)}"></div><div class="field"><label>工具类型 *</label><select class="select" name="channel">${TOOL_TYPES.map(value => `<option ${toolType(target) === value ? "selected" : ""}>${value}</option>`).join("")}</select></div><div class="field wide"><label>标签</label><input class="input" name="tags" maxlength="60" value="${escapeHTML(target.tags.join("，"))}"></div><div class="field wide"><label>一句话介绍（选填）</label><textarea class="textarea compact" name="summary" maxlength="120">${escapeHTML(target.short)}</textarea></div><div class="field wide"><label>详细体验 *</label><textarea class="textarea" name="reason" required minlength="20" maxlength="600">${escapeHTML(submission.reason || target.description)}</textarea></div><div class="wide modal-form-actions"><button class="btn btn-light" type="button" data-action="close-modal">取消</button><button class="btn btn-primary" type="submit">保存并更新前台</button></div></form>`;
+    : `<form id="user-submission-form" class="form-grid" data-submission-id="${submission.id}" data-target-id="${target.id}" data-content-type="tool"><div class="field"><label>工具名称 *</label><input class="input" name="name" required maxlength="50" value="${escapeHTML(target.name)}"></div><div class="field"><label>官网 / 项目链接 *</label><input class="input" name="url" type="url" pattern="https?://.*" required value="${escapeHTML(target.website)}"></div><div class="field"><label>工具类型 *</label><select class="select" name="channel">${TOOL_TYPES.map(value => `<option ${toolType(target) === value ? "selected" : ""}>${value}</option>`).join("")}</select></div>${resourceCoverFieldHTML(`edit-tool-cover-${target.id}`, target.coverImage || "")}<div class="field wide"><label>标签</label><input class="input" name="tags" maxlength="60" value="${escapeHTML(target.tags.join("，"))}"></div><div class="field wide"><label>一句话介绍（选填）</label><textarea class="textarea compact" name="summary" maxlength="120">${escapeHTML(target.short)}</textarea></div><div class="field wide"><label>详细体验 *</label><textarea class="textarea" name="reason" required minlength="20" maxlength="600">${escapeHTML(submission.reason || target.description)}</textarea></div><div class="wide modal-form-actions"><button class="btn btn-light" type="button" data-action="close-modal">取消</button><button class="btn btn-primary" type="submit">保存并更新前台</button></div></form>`;
   openModal(modalFrame(isArticle ? "编辑学习文章" : "编辑工具资源", "保存后会立即同步到前台详情页。", form), true);
 }
 
@@ -1061,7 +1116,7 @@ function deleteSubmissionModal(submissionId) {
 function resourceEditorModal(item = null) {
   const editing = Boolean(item);
   const data = item || { name: "", website: "", category: "AI工具", subcategory: CATEGORY_META[0].name, short: "", tags: [], description: "", status: "online" };
-  openModal(modalFrame(editing ? "编辑资源" : "新增资源", "修改会直接同步到前台详情页。", `<form id="admin-resource-form" class="form-grid" data-id="${item?.id || ""}"><div class="field"><label>工具名称 *</label><input class="input" id="admin-resource-name" name="name" required value="${escapeHTML(data.name)}"></div><div class="field"><label>官网链接 *</label><input class="input" name="website" type="url" pattern="https?://.*" required value="${escapeHTML(data.website)}" placeholder="https://"></div><div class="field"><label>工具类型</label><select class="select" name="category">${TOOL_TYPES.map(value => `<option ${toolType(data) === value ? "selected" : ""}>${value}</option>`).join("")}</select></div><div class="field wide"><label>一句话介绍（选填）</label><textarea class="textarea" id="admin-resource-short" name="short">${escapeHTML(data.short)}</textarea></div><div class="field wide"><label>标签（逗号分隔）</label><input class="input" id="admin-resource-tags" name="tags" value="${escapeHTML(data.tags.join("，"))}"></div><div class="field wide"><label>详细介绍</label><textarea class="textarea admin-description" id="admin-resource-description" name="description" required>${escapeHTML(data.description)}</textarea></div><div class="field"><label>展示状态</label><select class="select" name="status"><option value="online" ${data.status === "online" ? "selected" : ""}>展示中</option><option value="offline" ${data.status === "offline" ? "selected" : ""}>已隐藏</option></select></div><div class="wide modal-form-actions"><button class="btn btn-light" type="button" data-action="close-modal">取消</button><button class="btn btn-primary" type="submit">${editing ? "保存修改" : "创建资源"}</button></div></form>`), true);
+  openModal(modalFrame(editing ? "编辑资源" : "新增资源", "修改会直接同步到前台详情页。", `<form id="admin-resource-form" class="form-grid" data-id="${item?.id || ""}"><div class="field"><label>工具名称 *</label><input class="input" id="admin-resource-name" name="name" required value="${escapeHTML(data.name)}"></div><div class="field"><label>官网链接 *</label><input class="input" name="website" type="url" pattern="https?://.*" required value="${escapeHTML(data.website)}" placeholder="https://"></div><div class="field"><label>工具类型</label><select class="select" name="category">${TOOL_TYPES.map(value => `<option ${toolType(data) === value ? "selected" : ""}>${value}</option>`).join("")}</select></div>${resourceCoverFieldHTML(`admin-tool-cover-${item?.id || "new"}`, data.coverImage || "")}<div class="field wide"><label>一句话介绍（选填）</label><textarea class="textarea" id="admin-resource-short" name="short">${escapeHTML(data.short)}</textarea></div><div class="field wide"><label>标签（逗号分隔）</label><input class="input" id="admin-resource-tags" name="tags" value="${escapeHTML(data.tags.join("，"))}"></div><div class="field wide"><label>详细介绍</label><textarea class="textarea admin-description" id="admin-resource-description" name="description" required>${escapeHTML(data.description)}</textarea></div><div class="field"><label>展示状态</label><select class="select" name="status"><option value="online" ${data.status === "online" ? "selected" : ""}>展示中</option><option value="offline" ${data.status === "offline" ? "selected" : ""}>已隐藏</option></select></div><div class="wide modal-form-actions"><button class="btn btn-light" type="button" data-action="close-modal">取消</button><button class="btn btn-primary" type="submit">${editing ? "保存修改" : "创建资源"}</button></div></form>`), true);
 }
 
 function renderApp(scrollTop = false) {
@@ -1162,6 +1217,16 @@ document.addEventListener("click", async event => {
     state.submitType = trigger.dataset.value;
     state.focusPublishTab = true;
     return navigate("/submit", { type: state.submitType });
+  }
+  if (action === "remove-resource-cover") {
+    const field = trigger.closest("[data-resource-cover-field]");
+    const scope = field.dataset.resourceCoverField;
+    const draft = resourceCoverDrafts.get(scope);
+    draft.image = "";
+    draft.reading = null;
+    field.querySelector("[data-resource-cover-input]").value = "";
+    refreshResourceCoverPreview(scope);
+    return;
   }
   if (action === "remove-article-image") {
     state.articleImagesDraft.splice(Number(trigger.dataset.index), 1);
@@ -1342,6 +1407,32 @@ document.addEventListener("change", async event => {
   if (event.target.id === "publish-tool-type") state.toolChannel = event.target.value;
   if (event.target.id === "sort-select") updateRouteParams({ sort: event.target.value });
   if (event.target.id === "software-sort-select") updateRouteParams({ sort: event.target.value });
+  if (event.target.matches("[data-resource-cover-input]")) {
+    const input = event.target;
+    const file = input.files?.[0];
+    if (!file) return;
+    input.value = "";
+    if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) return showToast("请选择 JPG、PNG 或 WebP 图片", "error");
+    if (file.size > 500 * 1024) return showToast("封面图片不能超过 500KB", "error");
+    const scope = input.closest("[data-resource-cover-field]").dataset.resourceCoverField;
+    const draft = resourceCoverDrafts.get(scope);
+    const reading = new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error("图片读取失败，请重新选择"));
+      reader.readAsDataURL(file);
+    }).then(image => {
+      if (draft.reading === reading) {
+        draft.image = image;
+        refreshResourceCoverPreview(scope);
+      }
+    });
+    draft.reading = reading;
+    try { await reading; }
+    catch (error) { showToast(error.message, "error"); }
+    finally { if (draft.reading === reading) draft.reading = null; }
+    return;
+  }
   if (event.target.id === "article-image-input") {
     const files = [...(event.target.files || [])].slice(0, 3);
     if (files.some(file => !["image/jpeg", "image/png", "image/webp"].includes(file.type))) return showToast("请选择 JPG、PNG 或 WebP 图片", "error");
@@ -1367,6 +1458,7 @@ document.addEventListener("submit", async event => {
   const form = event.target;
   if (!(form instanceof HTMLFormElement)) return;
   event.preventDefault();
+  if (form.dataset.submitting === "true") return;
   const data = new FormData(form);
   if (form.id === "global-search-form") {
     const query = String(data.get("q") || "").trim();
@@ -1426,20 +1518,25 @@ document.addEventListener("submit", async event => {
   }
   if (form.id === "submit-tool-form") {
     if (!requireLogin()) return;
+    setResourceFormBusy(form, true);
     try {
+      const coverImage = await uploadResourceCover(form);
       const result = await apiRequest("/api/resources", { method: "POST", body: {
         name: String(data.get("name") || "").trim(),
         website: String(data.get("url") || "").trim(),
         channel: state.toolChannel,
+        coverImage,
         tags: parseTags(data.get("tags")),
         summary: String(data.get("summary") || "").trim(),
         reason: String(data.get("reason") || "").trim(),
       } });
       await loadBootstrap();
       delete state.publishDrafts.tool;
+      resourceCoverDrafts.delete("publish-tool-cover");
       showToast("工具已发布");
       return navigate(`/resource/${result.resource.id}`);
     } catch (error) { showToast(error.message, "error"); }
+    finally { setResourceFormBusy(form, false); }
     return;
   }
   if (form.id === "submit-article-form") {
@@ -1485,7 +1582,9 @@ document.addEventListener("submit", async event => {
       summary: String(data.get("summary") || "").trim(),
       reason: String(data.get("reason") || "").trim(),
     };
+    if (contentType === "tool") setResourceFormBusy(form, true);
     try {
+      if (contentType === "tool") body.coverImage = await uploadResourceCover(form);
       await apiRequest(`/api/submissions/${encodeURIComponent(submissionId)}`, { method: "PATCH", body });
       closeModal();
       await loadBootstrap();
@@ -1493,6 +1592,7 @@ document.addEventListener("submit", async event => {
       renderApp(false);
       showToast("内容已更新并同步到前台");
     } catch (error) { showToast(error.message, "error"); }
+    finally { if (contentType === "tool") setResourceFormBusy(form, false); }
     return;
   }
   if (form.id === "profile-form") {
@@ -1530,15 +1630,19 @@ document.addEventListener("submit", async event => {
     const existingId = form.dataset.id;
     const existing = resources(true).find(r => r.id === existingId);
     if (!existing) return showToast("请通过前台发布入口创建新资源", "error");
+    setResourceFormBusy(form, true);
     try {
+      const coverImage = await uploadResourceCover(form);
       const result = await apiRequest(`/api/admin/resources/${encodeURIComponent(existingId)}`, { method: "PATCH", body: {
         name: String(data.get("name") || "").trim(), website: String(data.get("website") || "").trim(), category: String(data.get("category") || "AI工具"),
+        coverImage,
         tags: parseTags(data.get("tags")), short: String(data.get("short") || "").trim(),
         description: String(data.get("description") || "").trim(), status: String(data.get("status") || "online"),
       } });
       state.data.resources = resources(true).map(item => item.id === existingId ? result.resource : item);
       closeModal(); renderApp(false); showToast("资源信息已更新");
     } catch (error) { showToast(error.message, "error"); }
+    finally { setResourceFormBusy(form, false); }
     return;
   }
 });

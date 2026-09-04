@@ -8,7 +8,7 @@ import { createRepository } from "../server/repository.mjs";
 import { createApp } from "../server/app.mjs";
 import { hashPassword } from "../server/security.mjs";
 
-async function createTestContext({ metadataReader, now } = {}) {
+async function createTestContext({ metadataReader, now, imageStore = async () => "/uploads/test.png" } = {}) {
   const memory = newDb({ autoCreateForeignKeyIndices: true });
   const adapter = memory.adapters.createPg();
   const pool = new adapter.Pool();
@@ -25,7 +25,7 @@ async function createTestContext({ metadataReader, now } = {}) {
     repository,
     metadataReader,
     mailer: async ({ code }) => { lastCode = code; return { developmentCode: code }; },
-    imageStore: async () => "/uploads/test.png",
+    imageStore,
   });
   const server = createServer(app.handler);
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -293,5 +293,54 @@ test("admin analytics count recorded visits across Shanghai day/month boundaries
     assert.deepEqual(result.data.stats.trend.at(-1), { day: "2026-09-02", views: 0 });
     assert.equal(result.data.stats.monthViews, 6);
     assert.equal((await context.request("/api/admin/data")).response.status, 401);
+  } finally { await context.close(); }
+});
+
+
+test("optional uploaded tool covers persist through publishing and both editing interfaces", async () => {
+  let uploadCount = 0;
+  const context = await createTestContext({ imageStore: async () => `/uploads/cover-${++uploadCount}.png` });
+  try {
+    await context.repository.createUser({ email: "publisher@example.com", passwordHash: await hashPassword("PublisherPass123"), nickname: "封面发布者" });
+    const user = await context.request("/api/auth/login", { method: "POST", body: { email: "publisher@example.com", password: "PublisherPass123" } });
+    const admin = await context.request("/api/auth/login", { method: "POST", body: { email: "admin@example.com", password: "AdminPass123" } });
+    const fields = { name: "可选封面测试工具", website: "https://example.com/", channel: "在线工具", reason: "用于验证用户上传图片后能正常发布和编辑，并确保没有封面的现有内容仍然可以使用。" };
+    const noCover = await context.request("/api/resources", { method: "POST", cookie: user.cookie, body: fields });
+    assert.equal(noCover.response.status, 201);
+    assert.equal(noCover.data.resource.coverImage, "");
+    assert.equal((await context.request("/api/uploads/images", { method: "POST", body: { images: ["data:image/png;base64,test"] } })).response.status, 401);
+    const upload = await context.request("/api/uploads/images", { method: "POST", cookie: user.cookie, body: { images: ["data:image/png;base64,test"] } });
+    assert.equal(upload.response.status, 201);
+    const originalImage = upload.data.images[0];
+    const published = await context.request("/api/resources", { method: "POST", cookie: user.cookie, body: { ...fields, coverImage: originalImage } });
+    assert.equal(published.response.status, 201);
+    const id = published.data.resource.id;
+    assert.equal(published.data.resource.coverImage, originalImage);
+    const getCover = async () => (await context.request("/api/bootstrap")).data.resources.find(item => item.id === id).coverImage;
+    assert.equal(await getCover(), originalImage);
+    const dashboard = await context.request("/api/me/dashboard", { cookie: user.cookie });
+    const submission = dashboard.data.submissions.find(item => item.targetId === id);
+    const edit = (body, cookie = user.cookie) => context.request(`/api/submissions/${submission.id}`, { method: "PATCH", cookie, body: { ...fields, ...body } });
+    assert.equal((await edit({ summary: "修改介绍，保留原图" })).response.status, 200);
+    assert.equal(await getCover(), originalImage);
+    assert.equal((await edit({ coverImage: "" }, admin.cookie)).response.status, 403);
+    assert.equal(await getCover(), originalImage);
+    const replacement = (await context.request("/api/uploads/images", { method: "POST", cookie: user.cookie, body: { images: ["data:image/png;base64,test"] } })).data.images[0];
+    assert.equal((await edit({ coverImage: replacement })).response.status, 200);
+    assert.equal(await getCover(), replacement);
+    const adminFields = { name: fields.name, website: fields.website, category: "在线工具", description: fields.reason, status: "online" };
+    const adminEdit = (body, cookie = admin.cookie) => context.request(`/api/admin/resources/${id}`, { method: "PATCH", cookie, body: { ...adminFields, ...body } });
+    assert.equal((await adminEdit({})).response.status, 200);
+    assert.equal(await getCover(), replacement);
+    assert.equal((await adminEdit({ coverImage: "" }, user.cookie)).response.status, 403);
+    for (const coverImage of ["https://example.com/cover.png", "/uploads/../secret.png", "/uploads/%2e%2e/secret.png", "/uploads-evil/cover.png", "/uploads/cover.svg", "data:image/png;base64,test", { image: originalImage }]) {
+      assert.equal((await adminEdit({ coverImage })).response.status, 400);
+    }
+    assert.equal(await getCover(), replacement);
+    assert.equal((await edit({ coverImage: "" })).response.status, 200);
+    assert.equal(await getCover(), "");
+    assert.equal((await adminEdit({ coverImage: originalImage })).data.resource.coverImage, originalImage);
+    assert.equal((await adminEdit({ coverImage: "" })).data.resource.coverImage, "");
+    assert.equal((await context.database.query("SELECT cover_image FROM resources WHERE id=$1", [id])).rows[0].cover_image, "");
   } finally { await context.close(); }
 });

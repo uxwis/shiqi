@@ -8,7 +8,7 @@ import { createDatabase } from "./db.mjs";
 import { createRepository } from "./repository.mjs";
 import { createRateLimiter } from "./rate-limit.mjs";
 import { sendVerificationCode } from "./mailer.mjs";
-import { storeImageDataURL } from "./storage.mjs";
+import { storeImageDataURL, cleanUploadedImage } from "./storage.mjs";
 import { cleanParagraphs, cleanTags, cleanText, safeExternalURL } from "./content-policy.mjs";
 import { ApiError, applySecurityHeaders, assertSameOrigin, clientIP, readJSON, sendJSON, sendNoContent, serveAppFile, serveStatic } from "./http.mjs";
 import { createSessionToken, createVerificationCode, hashPassword, hashToken, hashVerificationCode, normalizeEmail, parseCookies, sessionCookie, validatePassword, verifyPassword } from "./security.mjs";
@@ -249,6 +249,7 @@ export function createApp({ database, repository, mailer = sendVerificationCode,
         tutorial: ["打开官网了解工具的核心功能。", "从一个边界清楚的小任务开始体验。", "欢迎分享你的真实使用评价。"],
         scenarios: tags.length ? tags.slice(0, 3) : ["效率提升", "社区推荐"],
         website: safeExternalURL(body.website),
+        coverImage: cleanUploadedImage(body.coverImage) || "",
       });
       return sendJSON(res, 201, { resource: created });
     }
@@ -284,7 +285,7 @@ export function createApp({ database, repository, mailer = sendVerificationCode,
         const tags = cleanTags(body.tags);
         const reason = cleanText(body.reason,{name:"详细体验",min:20,max:600});
         const short = cleanText(body.summary,{name:"一句话介绍",max:120});
-        return { name:cleanText(body.name,{name:"工具名称",min:2,max:50}),logo:initials(body.name),website:safeExternalURL(body.website),channel:["软件工具", "在线工具"].includes(body.channel) ? "软件工具" : "AI工具",category:body.channel === "在线工具" ? "在线工具" : cleanText(body.category,{name:"分类",max:40}),tags,short,reason,description:[short, reason].filter(Boolean).join(" "),scenarios:tags.slice(0,3) };
+        return { name:cleanText(body.name,{name:"工具名称",min:2,max:50}),logo:initials(body.name),website:safeExternalURL(body.website),channel:["软件工具", "在线工具"].includes(body.channel) ? "软件工具" : "AI工具",category:body.channel === "在线工具" ? "在线工具" : cleanText(body.category,{name:"分类",max:40}),tags,short,reason,description:[short, reason].filter(Boolean).join(" "),scenarios:tags.slice(0,3),coverImage:cleanUploadedImage(body.coverImage) };
       })();
       const targetId = await repo.updateOwnSubmission(params[0], user.id, input);
       return sendJSON(res, 200, { targetId });
@@ -338,6 +339,7 @@ export function createApp({ database, repository, mailer = sendVerificationCode,
         short: cleanText(body.short, { name: "一句话介绍", max: 120 }),
         description: cleanText(body.description, { name: "详细介绍", min: 20, max: 2000 }),
         status: body.status === "offline" ? "offline" : "online",
+        coverImage: cleanUploadedImage(body.coverImage),
       }, admin.id);
       return sendJSON(res, 200, { resource: updated });
     }
