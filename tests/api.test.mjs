@@ -1,26 +1,29 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { newDb } from "pg-mem";
 import { createDatabase } from "../server/db.mjs";
 import { createRepository } from "../server/repository.mjs";
 import { createApp } from "../server/app.mjs";
 import { hashPassword } from "../server/security.mjs";
 
-async function createTestContext() {
+async function createTestContext({ metadataReader, now } = {}) {
   const memory = newDb({ autoCreateForeignKeyIndices: true });
   const adapter = memory.adapters.createPg();
   const pool = new adapter.Pool();
   const database = createDatabase(pool);
-  const migration = await readFile(new URL("../migrations/001_initial.sql", import.meta.url), "utf8");
-  await database.query(migration);
-  const repository = createRepository(database);
+  const migrationDirectory = new URL("../migrations/", import.meta.url);
+  for (const filename of (await readdir(migrationDirectory)).filter(name => name.endsWith(".sql")).sort()) {
+    await database.query(await readFile(new URL(filename, migrationDirectory), "utf8"));
+  }
+  const repository = createRepository(database, { now });
   const admin = await repository.createUser({ email: "admin@example.com", passwordHash: await hashPassword("AdminPass123"), nickname: "管理员", role: "admin" });
   let lastCode = "";
   const app = createApp({
     database,
     repository,
+    metadataReader,
     mailer: async ({ code }) => { lastCode = code; return { developmentCode: code }; },
     imageStore: async () => "/uploads/test.png",
   });
@@ -176,4 +179,119 @@ test("authentication and mutation routes enforce permissions", async () => {
   } finally {
     await context.close();
   }
+});
+
+test("online publishing, optional rich article summaries, metadata and real views round trip", async () => {
+  const context = await createTestContext({ metadataReader: async () => ({ image: "https://example.com/og.png", title: "示例", description: "用于验证的官网介绍，内容来源于公开网站。" }) });
+  try {
+    const login = await context.request("/api/auth/login", { method: "POST", body: { email: "admin@example.com", password: "AdminPass123" } });
+    const cookie = login.cookie;
+    const tool = await context.request("/api/resources", { method: "POST", cookie, body: { name: "在线测试工具", website: "https://example.com", channel: "在线工具", category: "在线工具", summary: "支持在线处理常见任务的示例工具。", reason: "提供在线使用入口与具体使用场景，供测试发布、分类和浏览量统计功能。", tags: ["测试"] } });
+    assert.equal(tool.response.status, 201);
+    const id = tool.data.resource.id;
+    assert.equal(tool.data.resource.category, "软件工具");
+    assert.equal(tool.data.resource.subcategory, "在线工具");
+    assert.equal(tool.data.resource.views, 0);
+    await context.database.query("UPDATE resources SET views_count=99000 WHERE id=$1", [id]);
+    assert.equal((await context.request(`/api/resources/${id}/view`, { method: "POST", body: {} })).data.views, 1);
+    assert.equal((await context.request(`/api/resources/${id}/view`, { method: "POST", body: {} })).data.views, 2);
+    assert.equal((await context.request(`/api/resources/missing/view`, { method: "POST", body: {} })).response.status, 404);
+    assert.equal((await context.request(`/api/resources/${id}/metadata`)).data.image, "https://example.com/og.png");
+    const richBody = [{ type: "h2", content: [{ text: "学习方法", bold: true }] }, { type: "p", content: [{ text: "从真实场景开始学习，记录操作过程并及时总结结果。".repeat(5), italic: true }] }, { type: "ol", items: [[{ text: "查看文档", href: "https://example.com/" }], [{ text: "执行步骤" }]] }];
+    const article = await context.request("/api/articles", { method: "POST", cookie, body: { title: "可以留空摘要的富文本文章", category: "学习方法", body: richBody } });
+    assert.equal(article.response.status, 201);
+    assert.equal(article.data.article.excerpt, "");
+    assert.deepEqual(article.data.article.body, richBody);
+    const dashboard = await context.request("/api/me/dashboard", { cookie });
+    const submission = dashboard.data.submissions.find(item => item.targetId === article.data.article.id);
+    const update = await context.request(`/api/submissions/${submission.id}`, { method: "PATCH", cookie, body: { title: "更新后的富文本学习文章", category: "学习方法", excerpt: "", body: richBody } });
+    assert.equal(update.response.status, 200);
+    const bootstrap = await context.request("/api/bootstrap");
+    assert.deepEqual(bootstrap.data.articles.find(item => item.id === article.data.article.id).body, richBody);
+    assert.equal(bootstrap.data.resources.find(item => item.id === id).views, 2);
+  } finally { await context.close(); }
+});
+
+test("tools publish and remain editable without a secondary category or introduction", async () => {
+  const context = await createTestContext();
+  try {
+    const login = await context.request("/api/auth/login", { method: "POST", body: { email: "admin@example.com", password: "AdminPass123" } });
+    const cookie = login.cookie;
+    for (const channel of ["AI工具", "软件工具", "在线工具"]) {
+      const fields = { name: `精简发布${channel}`, website: "https://example.com/", channel, reason: "记录具体使用场景和实际操作过程，提供足够的信息帮助读者判断是否适合自己。", tags: [] };
+      const result = await context.request("/api/resources", { method: "POST", cookie, body: fields });
+      assert.equal(result.response.status, 201);
+      assert.equal(result.data.resource.short, "");
+      assert.equal(result.data.resource.subcategory, channel === "在线工具" ? "在线工具" : "");
+      assert.equal(result.data.resource.description, fields.reason);
+      const dashboard = await context.request("/api/me/dashboard", { cookie });
+      const submission = dashboard.data.submissions.find(item => item.targetId === result.data.resource.id);
+      const edited = await context.request(`/api/submissions/${submission.id}`, { method: "PATCH", cookie, body: { ...fields, summary: "简短" } });
+      assert.equal(edited.response.status, 200);
+      const adminEdit = await context.request(`/api/admin/resources/${result.data.resource.id}`, { method: "PATCH", cookie, body: { name: fields.name, website: fields.website, category: channel, description: fields.reason, status: "online" } });
+      assert.equal(adminEdit.response.status, 200);
+      assert.equal(adminEdit.data.resource.short, "");
+      assert.equal(adminEdit.data.resource.subcategory, channel === "在线工具" ? "在线工具" : "");
+    }
+  } finally { await context.close(); }
+});
+
+test("admin analytics count recorded visits across Shanghai day/month boundaries and ignore legacy counters", async () => {
+  let timestamp = new Date("2026-08-31T15:59:59Z");
+  const context = await createTestContext({ now: () => timestamp });
+  try {
+    await context.database.query("UPDATE analytics_tracking SET started_at=$1 WHERE name='content_views'", [new Date("2026-08-31T00:00:00Z")]);
+    const login = await context.request("/api/auth/login", { method: "POST", body: { email: "admin@example.com", password: "AdminPass123" } });
+    const cookie = login.cookie;
+    let result = await context.request("/api/admin/data", { cookie });
+    assert.equal(result.data.stats.registeredUsers, 1);
+    assert.equal(result.data.stats.publishedContent, 0);
+    assert.equal(result.data.stats.monthViews, 0);
+    assert.deepEqual(result.data.stats.trend.map(entry => entry.views), [null, null, null, null, null, null, 0]);
+    const created = await context.request("/api/resources", { method: "POST", cookie, body: { name: "真实统计工具", website: "https://example.com/", channel: "AI工具", reason: "这条工具用于验证真实访问记录，详情浏览与后台统计应保持一致且不受演示计数影响。" } });
+    const resourceId = created.data.resource.id;
+    const article = await context.request("/api/articles", { method: "POST", cookie, body: { title: "真实文章访问统计测试", category: "学习方法", body: "从实际问题出发，记录使用方法、实践过程与结果，检查访问统计是否使用真实记录。".repeat(3) } });
+    const articleId = article.data.article.id;
+    await context.database.query("UPDATE resources SET views_count=86000 WHERE id=$1", [resourceId]);
+    await context.database.query("UPDATE articles SET views_count=72000 WHERE id=$1", [articleId]);
+    await context.request(`/api/resources/${resourceId}/view`, { method: "POST", body: {} });
+    await context.request(`/api/articles/${articleId}/view`, { method: "POST", body: {} });
+    result = await context.request("/api/admin/data", { cookie });
+    assert.equal(result.data.stats.monthViews, 2);
+    assert.equal(result.data.stats.publishedContent, 2);
+    assert.equal(result.data.resources[0].views, 1);
+    assert.equal(result.data.articles[0].views, 1);
+
+    timestamp = new Date("2026-08-31T16:00:00Z"); // September 1, 00:00 in Shanghai.
+    const visits = await Promise.all(Array.from({ length: 5 }, () => context.request(`/api/resources/${resourceId}/view`, { method: "POST", body: {} })));
+    assert.ok(visits.every(item => item.response.status === 200));
+    await context.request(`/api/articles/${articleId}/view`, { method: "POST", body: {} });
+    const report = await context.request("/api/reports", { method: "POST", cookie, body: { targetId: resourceId, targetType: "resource", type: "信息错误", detail: "等待处理的真实测试举报。" } });
+    result = await context.request("/api/admin/data", { cookie });
+    assert.equal(result.data.stats.monthViews, 6);
+    assert.equal(result.data.stats.pendingReports, 1);
+    assert.equal(result.data.stats.registeredUsers, 1);
+    assert.deepEqual(result.data.stats.trend.slice(-2), [{ day: "2026-08-31", views: 2 }, { day: "2026-09-01", views: 6 }]);
+    assert.equal(result.data.resources[0].views, 6);
+    assert.equal(result.data.articles[0].views, 2);
+    assert.equal(result.data.stats.updatedAt, timestamp.toISOString());
+
+    await context.request(`/api/admin/resources/${resourceId}/status`, { method: "PATCH", cookie, body: { status: "offline" } });
+    assert.equal((await context.request(`/api/resources/${resourceId}/view`, { method: "POST", body: {} })).response.status, 404);
+    assert.equal((await context.request("/api/articles/missing/view", { method: "POST", body: {} })).response.status, 404);
+    await context.request(`/api/admin/reports/${report.data.report.id}`, { method: "PATCH", cookie, body: { status: "resolved" } });
+    result = await context.request("/api/admin/data", { cookie });
+    assert.equal(result.data.stats.publishedContent, 1);
+    assert.equal(result.data.stats.monthViews, 6);
+    assert.equal(result.data.stats.pendingReports, 0);
+
+    // Read through a new repository instance: counters live in the database.
+    const restartedRepository = createRepository(context.database, { now: () => timestamp });
+    assert.equal((await restartedRepository.adminData()).stats.monthViews, 6);
+    timestamp = new Date("2026-09-01T16:00:00Z");
+    result = await context.request("/api/admin/data", { cookie });
+    assert.deepEqual(result.data.stats.trend.at(-1), { day: "2026-09-02", views: 0 });
+    assert.equal(result.data.stats.monthViews, 6);
+    assert.equal((await context.request("/api/admin/data")).response.status, 401);
+  } finally { await context.close(); }
 });

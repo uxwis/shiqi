@@ -1,3 +1,5 @@
+import { articleText } from "../rich-text.js";
+import { createMetadataReader } from "./website-metadata.mjs";
 import { createServer } from "node:http";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -63,7 +65,7 @@ async function issueSession(repository, req, res, user) {
   res.setHeader("Set-Cookie", sessionCookie(token));
 }
 
-export function createApp({ database, repository, mailer = sendVerificationCode, imageStore = storeImageDataURL } = {}) {
+export function createApp({ database, repository, mailer = sendVerificationCode, imageStore = storeImageDataURL, metadataReader = createMetadataReader() } = {}) {
   if (config.production) validateProductionConfig();
   const db = database || createDatabase();
   const repo = repository || createRepository(db);
@@ -81,6 +83,14 @@ export function createApp({ database, repository, mailer = sendVerificationCode,
     if (req.method === "GET" && pathname === "/api/bootstrap") {
       const data = await repo.publicBootstrap(context.user?.id);
       return sendJSON(res, 200, { ...data, currentUser: context.user });
+    }
+
+    const metadataParams = match(pathname, /^\/api\/resources\/([^/]+)\/metadata$/);
+    if (req.method === "GET" && metadataParams) {
+      rate(context, "metadata", { limit: 180, windowMs: 60_000 });
+      const item = (await repo.listResources()).find(item => item.id === metadataParams[0]);
+      if (!item) throw new ApiError(404, "资源不存在或已下架", "NOT_FOUND");
+      return sendJSON(res, 200, await metadataReader(item.website), { "Cache-Control": "public, max-age=300" });
     }
 
     if (req.method === "POST" && pathname === "/api/auth/request-code") {
@@ -190,8 +200,8 @@ export function createApp({ database, repository, mailer = sendVerificationCode,
     let params = match(pathname, /^\/api\/(resources|articles)\/([^/]+)\/view$/);
     if (req.method === "POST" && params) {
       rate(context, "view", { limit: 120, windowMs: 60_000 });
-      await repo.incrementView(params[0] === "articles" ? "article" : "resource", params[1]);
-      return sendNoContent(res);
+      const views = await repo.incrementView(params[0] === "articles" ? "article" : "resource", params[1]);
+      return sendJSON(res, 200, { views });
     }
 
     if (req.method === "POST" && pathname === "/api/comments") {
@@ -227,13 +237,13 @@ export function createApp({ database, repository, mailer = sendVerificationCode,
       const created = await repo.createResourceWithSubmission(user, {
         name: cleanText(body.name, { name: "工具名称", min: 2, max: 50 }),
         logo: initials(body.name),
-        category: body.channel === "软件工具" ? "软件工具" : "AI工具",
-        subcategory: cleanText(body.category, { name: "分类", min: 2, max: 40 }),
+        category: ["软件工具", "在线工具"].includes(body.channel) ? "软件工具" : "AI工具",
+        subcategory: body.channel === "在线工具" ? "在线工具" : cleanText(body.category, { name: "分类", max: 40 }),
         tags: tags.length ? tags : ["用户分享", "效率工具"],
         color: randomItem(palettes),
         logoColor: "#272821",
-        short: cleanText(body.summary, { name: "一句话介绍", min: 8, max: 120 }),
-        description: `${cleanText(body.summary, { name: "一句话介绍", min: 8, max: 120 })} ${reason}`,
+        short: cleanText(body.summary, { name: "一句话介绍", max: 120 }),
+        description: [cleanText(body.summary, { name: "一句话介绍", max: 120 }), reason].filter(Boolean).join(" "),
         reason,
         features: ["由社区用户真实分享", "提供可直接访问的来源链接", "适合具体任务场景", "可通过详情页反馈信息问题"],
         tutorial: ["打开官网了解工具的核心功能。", "从一个边界清楚的小任务开始体验。", "欢迎分享你的真实使用评价。"],
@@ -250,10 +260,10 @@ export function createApp({ database, repository, mailer = sendVerificationCode,
       const paragraphs = cleanParagraphs(body.body);
       const created = await repo.createArticleWithSubmission(user, {
         title: cleanText(body.title, { name: "文章标题", min: 4, max: 80 }),
-        excerpt: cleanText(body.excerpt, { name: "文章摘要", min: 10, max: 160 }),
+        excerpt: cleanText(body.excerpt, { name: "文章摘要", max: 160 }),
         category: cleanText(body.category, { name: "文章分类", min: 2, max: 30 }),
         tags: cleanTags(body.tags),
-        readTime: Math.max(3, Math.ceil(paragraphs.join("").length / 350)),
+        readTime: Math.max(3, Math.ceil(articleText(paragraphs).length / 350)),
         cover: randomItem(articlePalettes),
         images: Array.isArray(body.images) ? body.images.filter(image => typeof image === "string" && image.startsWith(config.upload.publicPath)).slice(0, 3) : [],
         body: paragraphs,
@@ -269,12 +279,12 @@ export function createApp({ database, repository, mailer = sendVerificationCode,
       const body = await readJSON(req);
       const input = current.content_type === "article" ? (() => {
         const paragraphs = cleanParagraphs(body.body);
-        return { title: cleanText(body.title,{name:"文章标题",min:4,max:80}),excerpt:cleanText(body.excerpt,{name:"文章摘要",min:10,max:160}),category:cleanText(body.category,{name:"文章分类",min:2,max:30}),tags:cleanTags(body.tags),body:paragraphs,readTime:Math.max(3,Math.ceil(paragraphs.join("").length/350)) };
+        return { title: cleanText(body.title,{name:"文章标题",min:4,max:80}),excerpt:cleanText(body.excerpt,{name:"文章摘要",max:160}),category:cleanText(body.category,{name:"文章分类",min:2,max:30}),tags:cleanTags(body.tags),body:paragraphs,readTime:Math.max(3,Math.ceil(articleText(paragraphs).length/350)) };
       })() : (() => {
         const tags = cleanTags(body.tags);
         const reason = cleanText(body.reason,{name:"详细体验",min:20,max:600});
-        const short = cleanText(body.summary,{name:"一句话介绍",min:8,max:120});
-        return { name:cleanText(body.name,{name:"工具名称",min:2,max:50}),logo:initials(body.name),website:safeExternalURL(body.website),channel:body.channel === "软件工具" ? "软件工具" : "AI工具",category:cleanText(body.category,{name:"分类",min:2,max:40}),tags,short,reason,description:`${short} ${reason}`,scenarios:tags.slice(0,3) };
+        const short = cleanText(body.summary,{name:"一句话介绍",max:120});
+        return { name:cleanText(body.name,{name:"工具名称",min:2,max:50}),logo:initials(body.name),website:safeExternalURL(body.website),channel:["软件工具", "在线工具"].includes(body.channel) ? "软件工具" : "AI工具",category:body.channel === "在线工具" ? "在线工具" : cleanText(body.category,{name:"分类",max:40}),tags,short,reason,description:[short, reason].filter(Boolean).join(" "),scenarios:tags.slice(0,3) };
       })();
       const targetId = await repo.updateOwnSubmission(params[0], user.id, input);
       return sendJSON(res, 200, { targetId });
@@ -322,10 +332,10 @@ export function createApp({ database, repository, mailer = sendVerificationCode,
         name,
         logo: initials(name),
         website: safeExternalURL(body.website),
-        category: body.category === "软件工具" ? "软件工具" : "AI工具",
-        subcategory: cleanText(body.subcategory, { name: "分类", min: 2, max: 40 }),
+        category: ["软件工具", "在线工具"].includes(body.category) ? "软件工具" : "AI工具",
+        subcategory: body.category === "在线工具" ? "在线工具" : cleanText(body.subcategory, { name: "分类", max: 40 }),
         tags: cleanTags(body.tags),
-        short: cleanText(body.short, { name: "一句话介绍", min: 8, max: 120 }),
+        short: cleanText(body.short, { name: "一句话介绍", max: 120 }),
         description: cleanText(body.description, { name: "详细介绍", min: 20, max: 2000 }),
         status: body.status === "offline" ? "offline" : "online",
       }, admin.id);

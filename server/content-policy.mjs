@@ -1,3 +1,4 @@
+import { normalizeBlock, blockText, articleText } from "../rich-text.js";
 import { ApiError } from "./http.mjs";
 
 const CONTROL_CHARACTERS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/;
@@ -28,11 +29,18 @@ export function safeExternalURL(value) {
 
 export function cleanParagraphs(value, { minTotal = 80, maxTotal = 20_000 } = {}) {
   const paragraphs = Array.isArray(value) ? value : String(value || "").split(/\n\s*\n/);
-  const cleaned = paragraphs.map(paragraph => cleanText(paragraph, { name: "正文段落", max: 4000 })).filter(Boolean).slice(0, 100);
-  const total = cleaned.join("\n\n").length;
+  if (paragraphs.length > 100) throw new ApiError(400, "正文不能超过 100 段", "CONTENT_TOO_LONG");
+  const cleaned = paragraphs.map(paragraph => {
+    if (typeof paragraph === "string") return cleanText(paragraph, { name: "正文段落", max: 4000 });
+    let block;
+    try { block = normalizeBlock(paragraph); } catch { throw new ApiError(400, "正文格式不正确", "INVALID_CONTENT"); }
+    cleanText(blockText(block), { name: "正文段落", max: 4000 });
+    return block;
+  }).filter(paragraph => blockText(paragraph).trim());
+  const total = articleText(cleaned).length;
   if (total < minTotal) throw new ApiError(400, `正文至少需要 ${minTotal} 个字`, "CONTENT_TOO_SHORT");
   if (total > maxTotal) throw new ApiError(400, `正文不能超过 ${maxTotal} 个字`, "CONTENT_TOO_LONG");
-  const linkCount = (cleaned.join(" ").match(/https?:\/\//gi) || []).length;
+  const linkCount = (JSON.stringify(cleaned).match(/https?:\/\//gi) || []).length;
   if (linkCount > 12) throw new ApiError(400, "正文包含过多外部链接", "TOO_MANY_LINKS");
   return cleaned;
 }

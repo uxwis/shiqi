@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { newDb } from "pg-mem";
 import { createDatabase } from "../server/db.mjs";
 import { createRepository } from "../server/repository.mjs";
@@ -10,8 +10,10 @@ import { config } from "../server/config.mjs";
 const memory = newDb({ autoCreateForeignKeyIndices: true });
 const adapter = memory.adapters.createPg();
 const database = createDatabase(new adapter.Pool());
-const migration = await readFile(new URL("../migrations/001_initial.sql", import.meta.url), "utf8");
-await database.query(migration);
+const migrationDirectory = new URL("../migrations/", import.meta.url);
+for (const filename of (await readdir(migrationDirectory)).filter(name => name.endsWith(".sql")).sort()) {
+  await database.query(await readFile(new URL(filename, migrationDirectory), "utf8"));
+}
 await seedDatabase(database, { production: false });
 
 const repository = createRepository(database);

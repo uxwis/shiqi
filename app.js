@@ -1,3 +1,4 @@
+import { articleText, renderRichBlock, readRichEditor, safeRichLink } from "./rich-text.js";
 const STORAGE_PREFIX = "shiqi_v2_";
 const VERIFICATION_CODE_COOLDOWN_SECONDS = 60;
 
@@ -182,6 +183,65 @@ export const SEED_REPORTS = [
   { id: "r-demo", targetId: "singlefile", targetType: "resource", type: "链接失效", detail: "扩展商店入口暂时无法打开，请核查项目主页链接。", userId: "u-demo", status: "pending", created: "2026-08-05" }
 ];
 
+export const TOOL_TYPES = ["AI工具", "软件工具", "在线工具"];
+export function toolType(item) { return item.category === "软件工具" && item.subcategory === "在线工具" ? "在线工具" : item.category; }
+const coverCache = new Map();
+let coverObserver;
+function hydrateResourceCovers() {
+  coverObserver?.disconnect();
+  coverObserver = new IntersectionObserver(entries => {
+    entries.filter(entry => entry.isIntersecting).forEach(({ target }) => {
+      coverObserver.unobserve(target);
+      const id = target.dataset.coverResource;
+      const item = resources().find(item => item.id === id);
+      if (!item) return;
+      const key = `${id}:${item.website}`;
+      if (!coverCache.has(key)) coverCache.set(key, apiRequest(`/api/resources/${encodeURIComponent(id)}/metadata`).catch(() => ({ image: "" })));
+      coverCache.get(key).then(metadata => {
+        if (!metadata.image || !target.isConnected) return;
+        const img = new Image();
+        img.className = "resource-og-image";
+        img.alt = `${item.name} 官网预览`;
+        img.decoding = "async";
+        img.referrerPolicy = "no-referrer";
+        img.onload = () => { if (img.naturalWidth > 0) target.classList.add("has-og-image"); };
+        img.onerror = () => img.remove();
+        img.src = metadata.image;
+        target.appendChild(img);
+      });
+    });
+  }, { rootMargin: "100px" });
+  document.querySelectorAll("[data-cover-resource]").forEach(element => coverObserver.observe(element));
+}
+
+function richEditorHTML(body = []) {
+  const commands = [["bold", "加粗", "B", ""], ["italic", "斜体", "I", ""], ["formatBlock", "正文", "正文", "p"], ["formatBlock", "二级标题", "标题", "h2"], ["insertUnorderedList", "无序列表", "• 列表", ""], ["insertOrderedList", "有序列表", "1. 列表", ""], ["formatBlock", "引用", "引用", "blockquote"], ["link", "插入链接", "链接", ""], ["removeFormat", "清除格式", "清除格式", ""]];
+  return `<div class="rich-editor"><div class="rich-toolbar" role="toolbar" aria-label="正文格式">${commands.map(([command,label,text,value]) => `<button type="button" data-action="rich-command" data-command="${command}" data-value="${value}" aria-label="${label}" title="${label}">${text}</button>`).join("")}</div><div class="rich-editor-body" contenteditable="true" role="textbox" aria-label="正文" aria-multiline="true" data-placeholder="写下你的方法、过程和结论…">${body.map(renderRichBlock).join("")}</div></div>`;
+}
+
+function savePublishDraft() {
+  const form = document.querySelector(".publish-form");
+  if (!form) return;
+  const type = form.id === "submit-article-form" ? "article" : "tool";
+  const fields = Object.fromEntries(new FormData(form));
+  const editor = form.querySelector("[contenteditable]");
+  state.publishDrafts[type] = { fields, body: editor ? readRichEditor(editor) : [] };
+}
+
+function restorePublishDraft() {
+  const form = document.querySelector(".publish-form");
+  const draft = state.publishDrafts[state.submitType];
+  if (!form || !draft) return;
+  Object.entries(draft.fields).forEach(([name, value]) => {
+    const field = form.elements.namedItem(name);
+    if (!field) return;
+    if (field.type === "checkbox") field.checked = value === "on";
+    else field.value = value;
+  });
+  const editor = form.querySelector("[contenteditable]");
+  if (editor) editor.innerHTML = draft.body.map(renderRichBlock).join("");
+}
+
 const state = {
   authMode: "login",
   profileTab: "overview",
@@ -192,6 +252,8 @@ const state = {
   articleImagesDraft: [],
   submitType: "tool",
   toolChannel: "AI工具",
+  publishDrafts: {},
+  focusPublishTab: false,
   searchReturnHash: null,
   verificationCodeCooldowns: {
     register: 0,
@@ -207,6 +269,7 @@ const state = {
     users: [],
     submissions: [],
     reports: [],
+    adminStats: null,
     favorites: [],
   },
 };
@@ -370,9 +433,27 @@ async function loadAdminData() {
   state.data.resources = data.resources;
   state.data.users = data.users;
   state.data.reports = data.reports;
+  state.data.articles = data.articles || state.data.articles;
+  state.data.adminStats = data.stats || null;
 }
 
 async function prepareRouteData(route = parseRoute()) {
+  if (route.path === "/software") {
+    const params = new URLSearchParams(route.params);
+    params.set("type", params.get("category") === "在线工具" ? "在线工具" : "软件工具");
+    history.replaceState(null, "", `#/resources?${params}`);
+  }
+  if (["resource", "article"].includes(route.parts[0])) {
+    const collection = route.parts[0] === "article" ? articles() : resources();
+    const endpoint = route.parts[0] === "article" ? "articles" : "resources";
+    const item = collection.find(item => item.id === route.parts[1]);
+    if (item) {
+      try {
+        const result = await apiRequest(`/api/${endpoint}/${encodeURIComponent(item.id)}/view`, { method: "POST", body: {} });
+        item.views = result.views;
+      } catch { /* Retain the last server count when recording fails. */ }
+    }
+  }
   if (route.path === "/profile") await loadDashboardData();
   if (route.path === "/admin") await loadAdminData();
 }
@@ -449,9 +530,8 @@ function brandHTML() {
 
 function headerHTML() {
   const route = state.route.path;
-  const isResource = route.startsWith("/resources") || route.startsWith("/resource/");
+  const isResource = route.startsWith("/resources") || route.startsWith("/resource/") || route.startsWith("/software");
   const isLearning = route.startsWith("/learning") || route.startsWith("/article/");
-  const isSoftware = route.startsWith("/software");
   const isSearch = route === "/search";
   const user = state.currentUser;
   return `<header class="site-header">
@@ -459,9 +539,8 @@ function headerHTML() {
       <a class="brand" href="#/" aria-label="拾器首页">${brandHTML()}</a>
       <nav class="main-nav" id="main-nav">
         <a class="nav-link ${route === "/" ? "active" : ""}" href="#/">首页</a>
-        <a class="nav-link ${isResource ? "active" : ""}" href="#/resources">AI 工具</a>
+        <a class="nav-link ${isResource ? "active" : ""}" href="#/resources">工具资源</a>
         <a class="nav-link ${isLearning ? "active" : ""}" href="#/learning">学习资源</a>
-        <a class="nav-link ${isSoftware ? "active" : ""}" href="#/software">软件工具</a>
         ${user?.role === "admin" ? `<a class="nav-link ${route === "/admin" ? "active" : ""}" href="#/admin">管理后台</a>` : ""}
       </nav>
       <div class="header-actions">
@@ -483,7 +562,7 @@ function globalSearchResultsHTML(query = "") {
   ])).sort((a,b) => Number(b.featured) - Number(a.featured) || b.favorites - a.favorites).slice(0, 8);
   const articleResults = articles().filter(article => matches([
     article.title, article.excerpt, article.category, article.author,
-    ...article.tags, ...article.body,
+    ...article.tags, articleText(article.body),
   ])).sort((a,b) => Number(b.featured) - Number(a.featured) || b.views - a.views).slice(0, 6);
   const label = `“${escapeHTML(query.trim())}”的搜索结果`;
   return `<div class="global-search-summary"><strong>${label}</strong><span>${toolResults.length} 个工具 · ${articleResults.length} 篇文章</span></div>
@@ -547,6 +626,8 @@ function updateSearchPage(query = "") {
 
   const results = document.querySelector("#global-search-results");
   if (results) results.innerHTML = globalSearchResultsHTML(normalizedQuery);
+  hydrateResourceCovers();
+  restorePublishDraft();
   document.title = pageTitle();
   window.scrollTo({ top: 0, behavior: "instant" });
 }
@@ -564,7 +645,7 @@ function footerHTML() {
     <div class="container">
       <div class="footer-grid">
         <div class="footer-brand"><a class="brand" href="#/">${brandHTML()}</a><p>由用户共同发布和维护的工具与学习资源社区。清晰发现、真实分享，让有价值的内容更容易被看见。</p></div>
-        <div class="footer-col"><h4>发现</h4><a href="#/resources">AI 工具</a><a href="#/software">软件工具</a><a href="#/learning">学习资源</a></div>
+        <div class="footer-col"><h4>发现</h4><a href="#/resources">工具资源</a><a href="#/learning">学习资源</a></div>
         <div class="footer-col"><h4>参与</h4><a href="#/submit">发布内容</a><a href="#/profile?tab=favorites">我的收藏</a><a href="#/learning?sort=latest">最新文章</a></div>
         <div class="footer-col"><h4>关于</h4><a href="javascript:void(0)" data-action="show-about">关于拾器</a><a href="javascript:void(0)" data-action="show-policy">收录标准</a><a href="javascript:void(0)" data-action="show-policy">隐私与条款</a></div>
       </div>
@@ -593,18 +674,17 @@ function resourceLogo(item) {
 }
 
 function resourceCard(item, rank = null) {
-  return `<article class="resource-card">
-    <div class="resource-card-cover" style="--card-bg:${item.color};--logo-color:${item.logoColor}" data-action="open-resource" data-id="${item.id}">
+  return `<a class="resource-card" href="#/resource/${encodeURIComponent(item.id)}" aria-label="查看 ${escapeHTML(item.name)} 详情">
+    <div class="resource-card-cover" style="--card-bg:${item.color};--logo-color:${item.logoColor}" data-cover-resource="${escapeHTML(item.id)}">
       ${rank ? `<span class="resource-rank">NO. ${String(rank).padStart(2, "0")}</span>` : ""}
       ${resourceLogo(item)}
     </div>
     <div class="resource-body">
-      <div class="resource-card-title"><h3 data-action="open-resource" data-id="${item.id}">${escapeHTML(item.name)}</h3><span class="score">${icon("star")} ${item.rating.toFixed(1)}</span></div>
+      <div class="resource-card-title"><h3>${escapeHTML(item.name)}</h3><span class="score">${icon("star")} ${item.rating.toFixed(1)}</span></div>
       <p class="resource-desc">${escapeHTML(item.short)}</p>
       <div class="tag-row">${item.tags.slice(0,3).map(tag => `<span class="tag">${escapeHTML(tag)}</span>`).join("")}</div>
-      <div class="resource-meta"><span>${icon("bookmark")} ${formatNumber(item.favorites)}</span><span>${icon("eye")} ${formatNumber(item.views)}</span><span>${escapeHTML(item.subcategory.replace("AI ", ""))}</span></div>
     </div>
-  </article>`;
+  </a>`;
 }
 
 function emptyState(title, description, actionText = "查看热门工具", action = "clear-filters") {
@@ -670,35 +750,32 @@ const RESOURCE_SORTERS = {
 
 function filteredChannelResources(channel) {
   const q = (state.route.params.get("q") || "").trim().toLowerCase();
-  const category = state.route.params.get("category") || "";
   const sort = state.route.params.get("sort") || "recommend";
-  const result = resources().filter(item => item.category === channel).filter(item => {
+  const result = resources().filter(item => !channel || toolType(item) === channel).filter(item => {
     const haystack = [item.name, item.short, item.description, item.subcategory, ...item.tags, ...item.scenarios].join(" ").toLowerCase();
-    return (!q || haystack.includes(q)) && (!category || item.subcategory === category);
+    return !q || haystack.includes(q);
   });
   return result.sort(RESOURCE_SORTERS[sort] || RESOURCE_SORTERS.recommend);
 }
 
-function resourceChannelPage({ channel, categories, categoryAction, categoryLabel = value => value, sortId, sortOptions, emptyTitle, emptyDescription, emptyActionText, clearAction, paginate = false, gridClass = "" }) {
+function resourceChannelPage({ channel, sortId, sortOptions, emptyTitle, emptyDescription, emptyActionText, clearAction, paginate = false }) {
   const result = filteredChannelResources(channel);
-  const category = state.route.params.get("category") || "";
   const sort = state.route.params.get("sort") || "recommend";
   const visible = paginate ? result.slice(0, state.listLimit) : result;
-  return `<main class="main channel-main">
+  return `<main class="main channel-main tools-page">
     <section class="filters"><div class="container filter-bar">
-      <div class="filter-chips"><button class="filter-chip ${!category ? "active" : ""}" data-action="${categoryAction}" data-value="">全部</button>${categories.map(value => `<button class="filter-chip ${category === value ? "active" : ""}" data-action="${categoryAction}" data-value="${escapeHTML(value)}">${escapeHTML(categoryLabel(value))}</button>`).join("")}</div>
+      <div class="filter-chips tool-type-filters" aria-label="工具类型"><button class="filter-chip ${!channel ? "active" : ""}" data-action="set-resource-type" data-value="">全部</button>${TOOL_TYPES.map(value => `<button class="filter-chip ${channel === value ? "active" : ""}" data-action="set-resource-type" data-value="${value}">${value}</button>`).join("")}</div>
       <select class="sort-select" id="${sortId}" aria-label="排序">${sortOptions.map(([value, label]) => `<option value="${value}" ${sort === value ? "selected" : ""}>${label}</option>`).join("")}</select>
     </div></section>
-    <section class="page"><div class="container"><div class="resource-grid ${gridClass}">${result.length ? visible.map(item => resourceCard(item)).join("") : emptyState(emptyTitle, emptyDescription, emptyActionText, clearAction)}</div>${paginate && result.length > state.listLimit ? `<div class="load-more"><button class="btn btn-light btn-lg" data-action="load-more">加载更多 <span class="muted">${state.listLimit} / ${result.length}</span></button></div>` : ""}</div></section>
+    <section class="page"><div class="container"><div class="resource-grid">${result.length ? visible.map(item => resourceCard(item)).join("") : emptyState(emptyTitle, emptyDescription, emptyActionText, clearAction)}</div>${paginate && result.length > state.listLimit ? `<div class="load-more"><button class="btn btn-primary btn-lg" data-action="load-more">加载更多 <span>${state.listLimit} / ${result.length}</span></button></div>` : ""}</div></section>
   </main>`;
 }
 
 function resourcesPage() {
+  const selectedType = state.route.params.get("type");
+  const channel = TOOL_TYPES.includes(selectedType) ? selectedType : "";
   return resourceChannelPage({
-    channel: "AI工具",
-    categories: CATEGORY_META.map(category => category.name),
-    categoryAction: "set-category",
-    categoryLabel: value => value.replace("AI ", ""),
+    channel,
     sortId: "sort-select",
     sortOptions: [["recommend", "综合推荐"], ["latest", "最新收录"], ["rating", "评分最高"], ["favorites", "收藏最多"], ["views", "浏览最多"]],
     emptyTitle: "没有找到匹配的工具",
@@ -709,20 +786,7 @@ function resourcesPage() {
   });
 }
 
-function softwarePage() {
-  return resourceChannelPage({
-    channel: "软件工具",
-    categories: SOFTWARE_CATEGORIES,
-    categoryAction: "set-software-category",
-    sortId: "software-sort-select",
-    sortOptions: [["recommend", "综合推荐"], ["latest", "最近更新"], ["rating", "评分最高"], ["views", "浏览最多"]],
-    emptyTitle: "没有找到匹配的软件",
-    emptyDescription: "换一个关键词或查看其他软件分类。",
-    emptyActionText: "查看全部软件",
-    clearAction: "clear-software-filters",
-    gridClass: "software-grid",
-  });
-}
+function softwarePage() { return resourcesPage(); }
 
 function articleCoverImage(article) {
   return (article.images || []).find(image => typeof image === "string" && image.trim()) || "";
@@ -745,7 +809,7 @@ function learningPage() {
   const tag = state.route.params.get("tag") || "";
   const sort = state.route.params.get("sort") || "latest";
   let result = articles().filter(article => {
-    const haystack = [article.title, article.excerpt, article.category, article.author, ...article.tags, ...article.body].join(" ").toLowerCase();
+    const haystack = [article.title, article.excerpt, article.category, article.author, ...article.tags, articleText(article.body)].join(" ").toLowerCase();
     return (!q || haystack.includes(q)) && (!tag || article.tags.includes(tag) || article.category === tag);
   });
   result.sort(sort === "popular" ? (a,b) => b.views - a.views : (a,b) => b.updated.localeCompare(a.updated));
@@ -774,7 +838,7 @@ function articleListItem(article) {
 function renderArticleBody(article) {
   const inlineImages = (article.images || []).slice(1);
   return article.body.map((paragraph, index) => {
-    const copy = `<p class="${index === 0 ? "article-intro" : ""}">${linkifyText(paragraph)}</p>`;
+    const copy = typeof paragraph === "string" ? `<p class="${index === 0 ? "article-intro" : ""}">${linkifyText(paragraph)}</p>` : renderRichBlock(paragraph);
     const image = inlineImages[index] ? `<figure class="article-inline-figure"><img src="${escapeHTML(inlineImages[index])}" alt="${escapeHTML(article.title)}配图 ${index + 2}"><figcaption>由发布者随文章提供的内容配图</figcaption></figure>` : "";
     return copy + image;
   }).join("");
@@ -801,8 +865,8 @@ function detailPage(id) {
   const itemComments = comments().filter(c => c.resourceId === id && c.status === "approved").sort((a,b) => b.created.localeCompare(a.created));
   const related = resources().filter(r => r.id !== id && r.category === item.category && (r.subcategory === item.subcategory || r.tags.some(t => item.tags.includes(t)))).slice(0,4);
   const favorite = isFavorite(id);
-  const backPath = item.category === "软件工具" ? "/software" : "/resources";
-  const backLabel = item.category === "软件工具" ? "返回软件工具" : "返回 AI 工具";
+  const backPath = "/resources";
+  const backLabel = "返回工具资源";
   return `<main class="main"><div class="container page">
     <div class="back-row"><a class="back-link" href="#${backPath}">${icon("arrowLeft")} ${backLabel}</a></div>
     <section class="detail-hero">
@@ -810,25 +874,25 @@ function detailPage(id) {
       <div class="detail-main">
         <div class="tag-row"><span class="tag primary">${escapeHTML(item.subcategory)}</span>${item.tags.slice(0,3).map(t => `<span class="tag">${escapeHTML(t)}</span>`).join("")}</div>
         <h1>${escapeHTML(item.name)}</h1><p class="detail-lead">${escapeHTML(item.short)}</p>
-        <div class="detail-stats"><span>${icon("star")} <strong>${item.rating.toFixed(1)}</strong>（${formatNumber(item.ratings)} 条评价）</span><span>${icon("eye")} ${formatNumber(item.views)} 次浏览</span><span>${icon("bookmark")} ${formatNumber(item.favorites)} 人收藏</span><span>${icon("clock")} ${item.updated} 更新</span></div>
+        <div class="detail-stats"><span>${icon("star")} <strong>${item.rating.toFixed(1)}</strong></span><span>${icon("eye")} ${item.views.toLocaleString("zh-CN")} 次浏览</span><span>${icon("clock")} ${item.updated} 更新</span></div>
         <div class="detail-actions"><button class="btn btn-primary btn-lg" data-action="visit-resource" data-id="${item.id}">访问官网 ${icon("external")}</button><button class="btn btn-light btn-lg favorite-action ${favorite ? "active" : ""}" data-action="toggle-favorite" data-id="${item.id}" data-type="resource">${icon("heart")} ${favorite ? "已收藏" : "收藏"}</button><button class="btn btn-light btn-lg" data-action="share-resource" data-id="${item.id}">${icon("share")} 分享</button></div><a class="detail-url" href="${escapeHTML(item.website)}" target="_blank" rel="noopener noreferrer">${escapeHTML(item.website)} ${icon("external")}</a>
       </div>
     </section>
     <div class="detail-layout">
       <div>
-        <section class="content-card"><p class="eyebrow">ABOUT THIS TOOL</p><h2>为什么值得一试</h2><p class="rich-copy">${linkifyText(item.description)}</p><h3>核心能力</h3><ul class="feature-list">${item.features.map(feature => `<li class="feature-item"><span class="feature-check">${icon("check")}</span>${linkifyText(feature)}</li>`).join("")}</ul><h3>三步开始使用</h3><div class="steps">${item.tutorial.map(step => `<div class="step">${linkifyText(step)}</div>`).join("")}</div></section>
-        <section class="content-card" id="comments"><div class="section-head comment-section-head"><div><p class="eyebrow">COMMUNITY REVIEWS</p><h2 class="flush-title">真实使用者怎么说</h2></div><span class="result-count">${itemComments.length} 条评价</span></div>
+        <section class="content-card tool-community-card"><p class="eyebrow">ABOUT THIS TOOL</p><h2>为什么值得一试</h2><p class="rich-copy">${linkifyText(item.description)}</p>
+        <div class="community-reviews" id="comments"><div class="section-head comment-section-head"><div><p class="eyebrow">COMMUNITY REVIEWS</p><h2 class="flush-title">真实使用者怎么说</h2></div></div>
           <form class="comment-form" id="comment-form" data-resource-id="${item.id}">
             <div class="field"><label>你的评分</label><div class="rating-input">${[1,2,3,4,5].map(n => `<button type="button" class="star-btn ${n <= state.ratingDraft ? "active" : ""}" data-action="set-rating" data-rating="${n}">${icon("star")}</button>`).join("")}</div></div>
-            <div class="field"><label for="comment-content">分享真实体验</label><textarea class="textarea" id="comment-content" name="content" maxlength="500" placeholder="哪些功能好用？适合什么场景？有什么需要注意？"></textarea></div>
-            <div><button class="btn btn-primary" type="submit">发布评价</button> <span class="field-hint">${state.currentUser ? `将以「${escapeHTML(state.currentUser.nickname)}」发布` : "登录后可参与评价"}</span></div>
+            <div class="field"><textarea class="textarea" id="comment-content" name="content" aria-label="评价内容" maxlength="500" placeholder="哪些功能好用？适合什么场景？有什么需要注意？"></textarea></div>
+            <div><button class="btn btn-primary" type="submit">发布评价</button> ${state.currentUser ? "" : `<span class="field-hint">登录后可参与评价</span>`}</div>
           </form>
           <div class="comment-list">${itemComments.length ? itemComments.map(commentHTML).join("") : `<div class="empty-state compact-empty-state"><h3>还没有评价</h3><p>成为第一个分享使用体验的人。</p></div>`}</div>
-        </section>
+        </div></section>
         <section class="section-tight"><div class="section-head"><div><p class="eyebrow">YOU MAY ALSO LIKE</p><h2 class="section-title related-title">同类好工具</h2></div></div><div class="resource-grid">${related.map(r => resourceCard(r)).join("")}</div></section>
       </div>
       <aside class="detail-sidebar">
-        <section class="side-card detail-info-card"><h3>资源信息</h3><div class="info-list"><div class="info-row"><span>发布者</span><strong>${escapeHTML(item.source)}</strong></div><div class="info-row"><span>内容频道</span><strong>${escapeHTML(item.category)}</strong></div></div><div class="detail-scenarios"><h4>适用场景</h4><div class="tag-row">${item.scenarios.map(t => `<span class="tag">${escapeHTML(t)}</span>`).join("")}</div></div><button class="report-link" data-action="open-report" data-id="${item.id}" data-type="resource">${icon("alert")} 链接失效、信息错误或内容违规？提交反馈</button></section>
+        <section class="side-card detail-info-card"><h3>资源信息</h3><div class="info-list"><div class="info-row"><span>发布者</span><strong>${escapeHTML(item.source)}</strong></div><div class="info-row"><span>内容频道</span><strong>${escapeHTML(toolType(item))}</strong></div></div><div class="detail-scenarios"><h4>适用场景</h4><div class="tag-row">${item.scenarios.map(t => `<span class="tag">${escapeHTML(t)}</span>`).join("")}</div></div><button class="report-link" data-action="open-report" data-id="${item.id}" data-type="resource">${icon("alert")} 链接失效、信息错误或内容违规？提交反馈</button></section>
       </aside>
     </div>
   </div></main>`;
@@ -836,7 +900,7 @@ function detailPage(id) {
 
 function commentHTML(comment) {
   const mine = state.currentUser?.id === comment.userId;
-  return `<article class="comment"><div class="comment-head"><div class="comment-user"><span class="avatar">${escapeHTML(initials(comment.user))}</span><div><strong>${escapeHTML(comment.user)}</strong><small>${comment.created} · ${"★".repeat(comment.rating)}${"☆".repeat(5-comment.rating)}</small></div></div>${mine ? `<button class="comment-action" data-action="delete-own-comment" data-id="${comment.id}">${icon("trash")} 删除</button>` : ""}</div><p>${escapeHTML(comment.content)}</p><div class="comment-actions"><button class="comment-action" data-action="like-comment" data-id="${comment.id}">${icon("thumb")} 有帮助 ${comment.likes || 0}</button><button class="comment-action" data-action="reply-comment">${icon("message")} 回复</button></div></article>`;
+  return `<article class="comment"><div class="comment-head"><div class="comment-user"><span class="avatar">${escapeHTML(initials(comment.user))}</span><div><strong>${escapeHTML(comment.user)}</strong><small>${comment.created} · ${"★".repeat(comment.rating)}${"☆".repeat(5-comment.rating)}</small></div></div>${mine ? `<button class="comment-action" data-action="delete-own-comment" data-id="${comment.id}">${icon("trash")} 删除</button>` : ""}</div><p>${escapeHTML(comment.content)}</p><div class="comment-actions"><button class="comment-action" data-action="like-comment" data-id="${comment.id}">${icon("thumb")} 有帮助 ${comment.likes || 0}</button></div></article>`;
 }
 
 function authPage() {
@@ -905,30 +969,27 @@ function articleImagePreviewHTML() {
 function submitPage() {
   if (!state.currentUser) return `<main class="main"><div class="container page">${emptyState("登录后发布内容", "登录后即可直接发布工具或学习文章，不需要等待审核。", "去登录", "go-login")}</div></main>`;
   const isArticle = state.submitType === "article";
-  const categories = state.toolChannel === "软件工具" ? SOFTWARE_CATEGORIES : CATEGORY_META.map(item => item.name);
-  const form = isArticle ? `<form class="form-grid publish-form" id="submit-article-form">
+  const publishChannel = `<div class="field publish-channel-field"><label id="publish-channel-label">发布频道</label><div class="channel-switch" id="publish-channel" role="tablist" aria-labelledby="publish-channel-label"><button type="button" id="publish-tab-tool" role="tab" aria-controls="submit-tool-form" aria-selected="${!isArticle}" tabindex="${!isArticle ? 0 : -1}" class="${!isArticle ? "active" : ""}" data-action="set-submit-type" data-value="tool">工具资源</button><button type="button" id="publish-tab-article" role="tab" aria-controls="submit-article-form" aria-selected="${isArticle}" tabindex="${isArticle ? 0 : -1}" class="${isArticle ? "active" : ""}" data-action="set-submit-type" data-value="article">学习资源</button></div></div>`;
+  const form = isArticle ? `<form class="form-grid publish-form" id="submit-article-form" role="tabpanel" aria-labelledby="publish-tab-article">
       <div class="field wide"><label>文章标题 *</label><input class="input" name="title" required maxlength="80" placeholder="用清楚、具体的标题告诉读者能学到什么"></div>
       <div class="field"><label>文章分类 *</label><select class="select" name="category" required>${["AI 入门","学习方法","工具教程","研究方法","安全指南","内容创作","基础技能","数字生活"].map(value => `<option>${value}</option>`).join("")}</select></div>
       <div class="field"><label>标签</label><input class="input" name="tags" maxlength="60" placeholder="用逗号分隔，例如：笔记，工作流"></div>
       <div class="field wide"><label>文章配图</label><label class="article-upload-zone" for="article-image-input">${icon("upload")}<span><strong>选择图片</strong><small>支持 JPG、PNG、WebP，最多 3 张</small></span><input class="hidden" id="article-image-input" type="file" accept="image/jpeg,image/png,image/webp" multiple></label><div class="article-image-preview" id="article-image-preview">${articleImagePreviewHTML()}</div><p class="field-hint">第一张作为文章头图，其余图片会按顺序穿插在正文段落之间；单张不超过 500KB。</p></div>
-      <div class="field wide"><label>文章摘要 *</label><textarea class="textarea compact" name="excerpt" required maxlength="160" placeholder="用一两句话概括文章要解决的问题"></textarea></div>
-      <div class="field wide"><label>正文 *</label><textarea class="textarea article-editor" name="body" required minlength="80" placeholder="写下你的方法、过程和结论。段落之间请空一行；粘贴完整 https:// 链接后，详情页会自动变成可新开页面的外链。"></textarea><p class="field-hint">建议包含真实场景、操作步骤、结果与限制。正文至少 80 个字。</p></div>
-      <label class="check-row wide"><input type="checkbox" name="confirm" required>我确认内容为真实分享，并愿意为内容准确性负责。</label>
+      <div class="field wide"><label>文章摘要（选填）</label><textarea class="textarea compact" name="excerpt" maxlength="160" placeholder="用一两句话概括文章要解决的问题（选填）"></textarea></div>
+      <div class="field wide"><label>正文 *</label>${richEditorHTML()}<p class="field-hint">建议包含真实场景、操作步骤、结果与限制。正文至少 80 个字。</p></div>
       <div class="wide publish-actions"><span>将以「${escapeHTML(state.currentUser.nickname)}」发布</span><button class="btn btn-primary btn-lg" type="submit">立即发布文章 ${icon("arrowRight")}</button></div>
-    </form>` : `<form class="form-grid publish-form" id="submit-tool-form">
-      <div class="field wide"><label>发布频道 *</label><div class="channel-switch"><button type="button" class="${state.toolChannel === "AI工具" ? "active" : ""}" data-action="set-tool-channel" data-value="AI工具">AI 工具</button><button type="button" class="${state.toolChannel === "软件工具" ? "active" : ""}" data-action="set-tool-channel" data-value="软件工具">软件工具</button></div></div>
+    </form>` : `<form class="form-grid publish-form" id="submit-tool-form" role="tabpanel" aria-labelledby="publish-tab-tool">
+      <div class="field wide"><label for="publish-tool-type">工具类型 *</label><select class="select" id="publish-tool-type">${TOOL_TYPES.map(value => `<option ${state.toolChannel === value ? "selected" : ""}>${value}</option>`).join("")}</select></div>
       <div class="field"><label>工具名称 *</label><input class="input" name="name" required maxlength="50" placeholder="例如：一款好用的工具"></div>
       <div class="field"><label>官网 / 项目链接 *</label><input class="input" name="url" type="url" pattern="https?://.*" required placeholder="https://"></div>
-      <div class="field"><label>所属分类 *</label><select class="select" name="category" required>${categories.map(value => `<option>${value}</option>`).join("")}</select></div>
-      <div class="field"><label>标签</label><input class="input" name="tags" maxlength="60" placeholder="用逗号分隔，例如：图片处理，效率"></div>
-      <div class="field wide"><label>一句话介绍 *</label><textarea class="textarea compact" name="summary" required maxlength="120" placeholder="它主要解决什么问题？适合谁使用？"></textarea></div>
+      <div class="field wide"><label>标签</label><input class="input" name="tags" maxlength="60" placeholder="用逗号分隔，例如：图片处理，效率"></div>
+      <div class="field wide"><label>一句话介绍（选填）</label><textarea class="textarea compact" name="summary" maxlength="120" placeholder="它主要解决什么问题？适合谁使用？"></textarea></div>
       <div class="field wide"><label>详细体验 *</label><textarea class="textarea" name="reason" required minlength="20" maxlength="600" placeholder="分享真实使用场景、主要亮点、使用步骤或需要注意的地方。正文中的完整链接会在详情页自动变成外链。"></textarea></div>
-      <label class="check-row wide"><input type="checkbox" name="confirm" required>我确认链接和描述真实有效，且内容不包含违法、侵权或恶意信息。</label>
       <div class="wide publish-actions"><span>将以「${escapeHTML(state.currentUser.nickname)}」发布</span><button class="btn btn-primary btn-lg" type="submit">立即发布工具 ${icon("arrowRight")}</button></div>
     </form>`;
-  return `<main class="main"><div class="container page"><div class="publish-hero"><div><p class="eyebrow">PUBLISH TOGETHER</p><h1 class="section-title">发布你的发现与经验</h1><p class="section-note">每位用户都可以直接发布；拾器运营同样使用这里，以普通发布者身份参与社区。</p></div><div class="publish-type-tabs"><button class="${!isArticle ? "active" : ""}" data-action="set-submit-type" data-value="tool">${icon("grid")} 工具资源</button><button class="${isArticle ? "active" : ""}" data-action="set-submit-type" data-value="article">${icon("file")} 学习文章</button></div></div><div class="submit-layout">
-    <section class="content-card">${form}</section>
-    <aside class="submit-intro"><p class="eyebrow publish-eyebrow">COMMUNITY PUBLISHING</p><h2>发布后，内容立即可见。</h2><p>平台不设置投稿审核队列。社区通过举报与链接失效反馈共同维护内容质量，运营只处理被反馈的内容。</p><ol class="guide-list"><li><span class="guide-num">1</span><span>选择工具资源或学习文章</span></li><li><span class="guide-num">2</span><span>提供真实、清晰、可核验的信息</span></li><li><span class="guide-num">3</span><span>发布后继续根据反馈更新内容</span></li></ol></aside>
+  return `<main class="main"><div class="container page"><div class="publish-hero"><div><p class="eyebrow">PUBLISH TOGETHER</p><h1 class="section-title">发布你的发现与经验</h1><p class="section-note">每位用户都可以直接发布，欢迎体验。</p></div></div><div class="submit-layout">
+    <section class="content-card">${publishChannel}${form}</section>
+    <aside class="submit-intro"><p class="eyebrow publish-eyebrow">COMMUNITY PUBLISHING</p><h2>发布前须知</h2><p>请勿发布侵权、违法、低俗、虚假、或未经授权的内容。如发现违规内容，请立即举报，我们将尽快核实处理</p><ol class="guide-list"><li><span class="guide-num">1</span><span>选择工具资源或学习资源</span></li><li><span class="guide-num">2</span><span>提供真实、清晰、可核验的信息</span></li><li><span class="guide-num">3</span><span>发布后继续根据反馈更新内容</span></li></ol></aside>
   </div></div></main>`;
 }
 
@@ -951,9 +1012,18 @@ function adminPanel(tab) {
     const pendingReports = allReports.filter(report => report.status === "pending");
     return `<div class="admin-head"><div><h1>内容审核</h1><p>这里只处理用户举报、链接失效和信息错误反馈；正常发布内容与评论不进入审核队列。</p></div><span class="result-count">${pendingReports.length} 项待处理</span></div><div class="chart-card report-queue"><h3>举报与反馈 · ${pendingReports.length} 项</h3><div class="compact-list">${pendingReports.length ? pendingReports.map(report => { const target = report.targetType === "article" ? articles(true).find(item => item.id === report.targetId) : allResources.find(item => item.id === (report.targetId || report.resourceId)); const reporter = allUsers.find(user => user.id === report.userId); return `<div class="compact-item report-item"><div class="compact-main"><span class="metric-icon">${icon("alert")}</span><div><strong>${escapeHTML(report.type)} · ${escapeHTML(target?.title || target?.name || "未知内容")}</strong><small>${escapeHTML(report.detail)} · 提交者：${escapeHTML(reporter?.nickname || "访客")} · ${report.created}</small></div></div><div class="table-actions"><button class="btn btn-soft btn-sm" data-action="resolve-report" data-id="${report.id}">标记已处理</button><button class="btn btn-light btn-sm" data-action="dismiss-report" data-id="${report.id}">忽略</button></div></div>`; }).join("") : `<div class="empty-state admin-empty-state"><h3>暂无待处理举报</h3><p>所有反馈均已处理。正常发布内容不会出现在这里。</p></div>`}</div></div>`;
   }
-  const pending = allReports.filter(report => report.status === "pending").length;
-  const chartValues = [42,61,54,78,66,92,84];
-  return `<div class="admin-head"><div><h1>数据看板</h1><p>平台内容与用户核心指标概览。</p></div><span class="result-count">数据更新于 ${today()}</span></div><div class="metric-grid"><div class="metric-card"><span class="metric-icon">${icon("file")}</span><strong>${allResources.filter(r => r.status === "online").length + articles().length}</strong><span>公开内容 · 本周持续增长</span></div><div class="metric-card"><span class="metric-icon">${icon("users")}</span><strong>${formatNumber(5286 + allUsers.length)}</strong><span>累计注册用户 · +12.6%</span></div><div class="metric-card"><span class="metric-icon">${icon("eye")}</span><strong>8.6w</strong><span>本月内容访问 · +18.2%</span></div><div class="metric-card"><span class="metric-icon">${icon("shield")}</span><strong>${pending}</strong><span>待处理举报</span></div></div><div class="chart-card"><h3>近 7 日访问趋势</h3><div class="bar-chart">${chartValues.map((v,i) => `<div class="bar-col"><div class="bar" style="height:${v}%"></div><span>${["周四","周五","周六","周日","周一","周二","今天"][i]}</span></div>`).join("")}</div></div>`;
+  const stats = state.data.adminStats;
+  if (!stats) return emptyState("统计暂时不可用", "点击刷新重新获取数据库统计。", "刷新数据", "refresh-admin-stats");
+  const formatDate = value => new Intl.DateTimeFormat("zh-CN", { timeZone: stats.timeZone, dateStyle: "short", timeStyle: "medium" }).format(new Date(value));
+  const maximum = Math.max(1, ...stats.trend.map(entry => entry.views || 0));
+  return `<div class="admin-head"><div><h1>数据看板</h1><p>平台内容与用户核心指标概览。</p></div><div class="admin-dashboard-actions"><span class="muted">更新于 ${escapeHTML(formatDate(stats.updatedAt))}</span><button class="btn btn-light btn-sm" data-action="refresh-admin-stats">刷新数据</button></div></div>
+    <div class="metric-grid">
+      <div class="metric-card" data-metric="published-content"><span class="metric-icon">${icon("file")}</span><strong>${stats.publishedContent.toLocaleString("zh-CN")}</strong><span>公开内容 · 工具与学习资源</span></div>
+      <div class="metric-card" data-metric="registered-users"><span class="metric-icon">${icon("users")}</span><strong>${stats.registeredUsers.toLocaleString("zh-CN")}</strong><span>累计注册用户 · 含运营账号</span></div>
+      <div class="metric-card" data-metric="month-views"><span class="metric-icon">${icon("eye")}</span><strong>${stats.monthViews.toLocaleString("zh-CN")}</strong><span>本月已记录内容访问 · PV</span></div>
+      <div class="metric-card" data-metric="pending-reports"><span class="metric-icon">${icon("shield")}</span><strong>${stats.pendingReports.toLocaleString("zh-CN")}</strong><span>待处理举报</span></div>
+    </div>
+    <div class="chart-card analytics-chart"><h3>近 7 日内容访问</h3><div class="bar-chart" aria-label="按北京时间统计的七日内容访问次数">${stats.trend.map(entry => `<div class="bar-col" aria-label="${entry.day}：${entry.views === null ? "未记录" : `${entry.views} 次访问`}"><small class="bar-value">${entry.views === null ? "未记录" : entry.views.toLocaleString("zh-CN")}</small><div class="bar-track"><div class="bar" style="height:${((entry.views || 0) / maximum) * 100}%"></div></div><span>${entry.day.slice(5).replace("-", "/")}</span></div>`).join("")}</div><p class="analytics-note">按北京时间统计，每次打开工具或文章详情记为一次访问（PV）。访问记录始于 ${escapeHTML(formatDate(stats.trackingStartedAt))}；更早的数据未采集。</p></div>`;
 }
 
 function notFoundPage() { return `<main class="main"><div class="container page">${emptyState("页面没有找到", "它可能已被移动、删除或暂时下架。", "返回首页", "go-home")}</div></main>`; }
@@ -976,10 +1046,9 @@ function submissionEditorModal(submissionId) {
   const target = isArticle ? articles(true).find(item => item.id === submission.targetId) : resources(true).find(item => item.id === submission.targetId);
   if (!target) return showToast("前台内容不存在，无法编辑", "error");
   const articleCategories = ["AI 入门","学习方法","工具教程","研究方法","安全指南","内容创作","基础技能","数字生活"];
-  const allToolCategories = [...CATEGORY_META.map(item => item.name), ...SOFTWARE_CATEGORIES];
   const form = isArticle
-    ? `<form id="user-submission-form" class="form-grid" data-submission-id="${submission.id}" data-target-id="${target.id}" data-content-type="article"><div class="field wide"><label>文章标题 *</label><input class="input" name="title" required maxlength="80" value="${escapeHTML(target.title)}"></div><div class="field"><label>文章分类 *</label><select class="select" name="category">${articleCategories.map(value => `<option ${target.category === value ? "selected" : ""}>${value}</option>`).join("")}</select></div><div class="field"><label>标签</label><input class="input" name="tags" maxlength="60" value="${escapeHTML(target.tags.join("，"))}"></div><div class="field wide"><label>文章摘要 *</label><textarea class="textarea compact" name="excerpt" required maxlength="160">${escapeHTML(target.excerpt)}</textarea></div><div class="field wide"><label>正文 *</label><textarea class="textarea article-editor" name="body" required minlength="80">${escapeHTML(target.body.join("\n\n"))}</textarea><p class="field-hint">现有文章配图会继续保留。</p></div><div class="wide modal-form-actions"><button class="btn btn-light" type="button" data-action="close-modal">取消</button><button class="btn btn-primary" type="submit">保存并更新前台</button></div></form>`
-    : `<form id="user-submission-form" class="form-grid" data-submission-id="${submission.id}" data-target-id="${target.id}" data-content-type="tool"><div class="field"><label>工具名称 *</label><input class="input" name="name" required maxlength="50" value="${escapeHTML(target.name)}"></div><div class="field"><label>官网 / 项目链接 *</label><input class="input" name="url" type="url" pattern="https?://.*" required value="${escapeHTML(target.website)}"></div><div class="field"><label>发布频道 *</label><select class="select" name="channel"><option value="AI工具" ${target.category === "AI工具" ? "selected" : ""}>AI 工具</option><option value="软件工具" ${target.category === "软件工具" ? "selected" : ""}>软件工具</option></select></div><div class="field"><label>所属分类 *</label><select class="select" name="category">${allToolCategories.map(value => `<option ${target.subcategory === value ? "selected" : ""}>${value}</option>`).join("")}</select></div><div class="field wide"><label>标签</label><input class="input" name="tags" maxlength="60" value="${escapeHTML(target.tags.join("，"))}"></div><div class="field wide"><label>一句话介绍 *</label><textarea class="textarea compact" name="summary" required maxlength="120">${escapeHTML(target.short)}</textarea></div><div class="field wide"><label>详细体验 *</label><textarea class="textarea" name="reason" required minlength="20" maxlength="600">${escapeHTML(submission.reason || target.description)}</textarea></div><div class="wide modal-form-actions"><button class="btn btn-light" type="button" data-action="close-modal">取消</button><button class="btn btn-primary" type="submit">保存并更新前台</button></div></form>`;
+    ? `<form id="user-submission-form" class="form-grid" data-submission-id="${submission.id}" data-target-id="${target.id}" data-content-type="article"><div class="field wide"><label>文章标题 *</label><input class="input" name="title" required maxlength="80" value="${escapeHTML(target.title)}"></div><div class="field"><label>文章分类 *</label><select class="select" name="category">${articleCategories.map(value => `<option ${target.category === value ? "selected" : ""}>${value}</option>`).join("")}</select></div><div class="field"><label>标签</label><input class="input" name="tags" maxlength="60" value="${escapeHTML(target.tags.join("，"))}"></div><div class="field wide"><label>文章摘要（选填）</label><textarea class="textarea compact" name="excerpt" maxlength="160">${escapeHTML(target.excerpt)}</textarea></div><div class="field wide"><label>正文 *</label>${richEditorHTML(target.body)}<p class="field-hint">现有文章配图会继续保留。</p></div><div class="wide modal-form-actions"><button class="btn btn-light" type="button" data-action="close-modal">取消</button><button class="btn btn-primary" type="submit">保存并更新前台</button></div></form>`
+    : `<form id="user-submission-form" class="form-grid" data-submission-id="${submission.id}" data-target-id="${target.id}" data-content-type="tool"><div class="field"><label>工具名称 *</label><input class="input" name="name" required maxlength="50" value="${escapeHTML(target.name)}"></div><div class="field"><label>官网 / 项目链接 *</label><input class="input" name="url" type="url" pattern="https?://.*" required value="${escapeHTML(target.website)}"></div><div class="field"><label>工具类型 *</label><select class="select" name="channel">${TOOL_TYPES.map(value => `<option ${toolType(target) === value ? "selected" : ""}>${value}</option>`).join("")}</select></div><div class="field wide"><label>标签</label><input class="input" name="tags" maxlength="60" value="${escapeHTML(target.tags.join("，"))}"></div><div class="field wide"><label>一句话介绍（选填）</label><textarea class="textarea compact" name="summary" maxlength="120">${escapeHTML(target.short)}</textarea></div><div class="field wide"><label>详细体验 *</label><textarea class="textarea" name="reason" required minlength="20" maxlength="600">${escapeHTML(submission.reason || target.description)}</textarea></div><div class="wide modal-form-actions"><button class="btn btn-light" type="button" data-action="close-modal">取消</button><button class="btn btn-primary" type="submit">保存并更新前台</button></div></form>`;
   openModal(modalFrame(isArticle ? "编辑学习文章" : "编辑工具资源", "保存后会立即同步到前台详情页。", form), true);
 }
 
@@ -992,8 +1061,7 @@ function deleteSubmissionModal(submissionId) {
 function resourceEditorModal(item = null) {
   const editing = Boolean(item);
   const data = item || { name: "", website: "", category: "AI工具", subcategory: CATEGORY_META[0].name, short: "", tags: [], description: "", status: "online" };
-  const allCategories = [...CATEGORY_META.map(c => c.name), ...SOFTWARE_CATEGORIES];
-  openModal(modalFrame(editing ? "编辑资源" : "新增资源", "修改会直接同步到前台详情页。", `<form id="admin-resource-form" class="form-grid" data-id="${item?.id || ""}"><div class="field"><label>工具名称 *</label><input class="input" id="admin-resource-name" name="name" required value="${escapeHTML(data.name)}"></div><div class="field"><label>官网链接 *</label><input class="input" name="website" type="url" pattern="https?://.*" required value="${escapeHTML(data.website)}" placeholder="https://"></div><div class="field"><label>内容频道</label><select class="select" name="category"><option value="AI工具" ${data.category === "AI工具" ? "selected" : ""}>AI 工具</option><option value="软件工具" ${data.category === "软件工具" ? "selected" : ""}>软件工具</option></select></div><div class="field"><label>分类</label><select class="select" id="admin-resource-category" name="subcategory">${allCategories.map(value => `<option ${data.subcategory === value ? "selected" : ""}>${value}</option>`).join("")}</select></div><div class="field wide"><label>一句话介绍</label><textarea class="textarea" id="admin-resource-short" name="short" required>${escapeHTML(data.short)}</textarea></div><div class="field wide"><label>标签（逗号分隔）</label><input class="input" id="admin-resource-tags" name="tags" value="${escapeHTML(data.tags.join("，"))}"></div><div class="field wide"><label>详细介绍</label><textarea class="textarea admin-description" id="admin-resource-description" name="description" required>${escapeHTML(data.description)}</textarea></div><div class="field"><label>展示状态</label><select class="select" name="status"><option value="online" ${data.status === "online" ? "selected" : ""}>展示中</option><option value="offline" ${data.status === "offline" ? "selected" : ""}>已隐藏</option></select></div><div class="field"><label>内容辅助</label><button class="btn btn-soft" type="button" data-action="ai-assist">${icon("spark")} AI 辅助补全</button></div><div class="wide modal-form-actions"><button class="btn btn-light" type="button" data-action="close-modal">取消</button><button class="btn btn-primary" type="submit">${editing ? "保存修改" : "创建资源"}</button></div></form>`), true);
+  openModal(modalFrame(editing ? "编辑资源" : "新增资源", "修改会直接同步到前台详情页。", `<form id="admin-resource-form" class="form-grid" data-id="${item?.id || ""}"><div class="field"><label>工具名称 *</label><input class="input" id="admin-resource-name" name="name" required value="${escapeHTML(data.name)}"></div><div class="field"><label>官网链接 *</label><input class="input" name="website" type="url" pattern="https?://.*" required value="${escapeHTML(data.website)}" placeholder="https://"></div><div class="field"><label>工具类型</label><select class="select" name="category">${TOOL_TYPES.map(value => `<option ${toolType(data) === value ? "selected" : ""}>${value}</option>`).join("")}</select></div><div class="field wide"><label>一句话介绍（选填）</label><textarea class="textarea" id="admin-resource-short" name="short">${escapeHTML(data.short)}</textarea></div><div class="field wide"><label>标签（逗号分隔）</label><input class="input" id="admin-resource-tags" name="tags" value="${escapeHTML(data.tags.join("，"))}"></div><div class="field wide"><label>详细介绍</label><textarea class="textarea admin-description" id="admin-resource-description" name="description" required>${escapeHTML(data.description)}</textarea></div><div class="field"><label>展示状态</label><select class="select" name="status"><option value="online" ${data.status === "online" ? "selected" : ""}>展示中</option><option value="offline" ${data.status === "offline" ? "selected" : ""}>已隐藏</option></select></div><div class="wide modal-form-actions"><button class="btn btn-light" type="button" data-action="close-modal">取消</button><button class="btn btn-primary" type="submit">${editing ? "保存修改" : "创建资源"}</button></div></form>`), true);
 }
 
 function renderApp(scrollTop = false) {
@@ -1016,8 +1084,14 @@ function renderApp(scrollTop = false) {
   else page = notFoundPage();
   const hideFooter = ["/auth", "/admin"].includes(state.route.path);
   document.querySelector("#app").innerHTML = `<div class="app-shell">${headerHTML()}${page}${hideFooter ? "" : footerHTML()}</div>`;
+  hydrateResourceCovers();
+  restorePublishDraft();
   document.title = pageTitle();
   document.querySelector("#main-nav")?.classList.remove("open");
+  if (state.route.path === "/submit" && state.focusPublishTab) {
+    document.querySelector(`#publish-tab-${state.submitType}`)?.focus();
+    state.focusPublishTab = false;
+  }
   if (scrollTop) window.scrollTo({ top: 0, behavior: "instant" });
   if (state.route.path === "/search") requestAnimationFrame(focusSearchInput);
 }
@@ -1035,7 +1109,7 @@ function pageTitle() {
     const article = articles(true).find(item => item.id === state.route.parts[1]);
     return article ? `${article.title} · 拾器学习资源` : "文章未找到 · 拾器";
   }
-  return ({ "/": "拾器 · 发现优质AI工具与数字资源", "/resources": "AI 工具 · 拾器", "/software": "软件工具 · 拾器", "/learning": "学习资源 · 拾器", "/auth": "登录与注册 · 拾器", "/profile": "个人中心 · 拾器", "/submit": "发布内容 · 拾器", "/admin": "管理后台 · 拾器" })[state.route.path] || "拾器 SHIQI";
+  return ({ "/": "拾器 · 发现优质AI工具与数字资源", "/resources": "工具资源 · 拾器", "/software": "工具资源 · 拾器", "/learning": "学习资源 · 拾器", "/auth": "登录与注册 · 拾器", "/profile": "个人中心 · 拾器", "/submit": "发布内容 · 拾器", "/admin": "管理后台 · 拾器" })[state.route.path] || "拾器 SHIQI";
 }
 
 function handleResourceIcon(event) {
@@ -1068,23 +1142,27 @@ document.addEventListener("click", async event => {
   if (action === "go-home") return navigate("/");
   if (action === "reload-app") return location.reload();
   if (action === "go-submit") return navigate("/submit");
-  if (action === "category-search") return navigate("/resources", { category: trigger.dataset.category });
+  if (action === "category-search") return navigate("/resources", { type: "AI工具", q: trigger.dataset.category });
+  if (action === "set-resource-type") return updateRouteParams({ type: trigger.dataset.value, category: "" });
   if (action === "hot-search") {
     const query = trigger.dataset.query;
     const history = getLocal("searchHistory", []).filter(v => v !== query);
     setLocal("searchHistory", [query, ...history].slice(0, 10));
     return openSearchPage(query);
   }
-  if (action === "set-category") return updateRouteParams({ category: trigger.dataset.value });
-  if (action === "set-software-category") return updateRouteParams({ category: trigger.dataset.value });
   if (action === "set-learning-sort") return updateRouteParams({ sort: trigger.dataset.value });
   if (action === "clear-filters") return navigate("/resources");
   if (action === "clear-software-filters") return navigate("/software");
   if (action === "clear-learning-filters") { state.articleLimit = 6; return navigate("/learning"); }
   if (action === "load-more") { state.listLimit += 8; return renderApp(false); }
   if (action === "load-more-articles") { state.articleLimit += 6; return renderApp(false); }
-  if (action === "set-submit-type") { state.submitType = trigger.dataset.value; return navigate("/submit", { type: state.submitType }); }
-  if (action === "set-tool-channel") { state.toolChannel = trigger.dataset.value; return renderApp(false); }
+  if (action === "set-submit-type") {
+    savePublishDraft();
+    if (state.submitType === trigger.dataset.value) return;
+    state.submitType = trigger.dataset.value;
+    state.focusPublishTab = true;
+    return navigate("/submit", { type: state.submitType });
+  }
   if (action === "remove-article-image") {
     state.articleImagesDraft.splice(Number(trigger.dataset.index), 1);
     const preview = document.querySelector("#article-image-preview");
@@ -1111,9 +1189,6 @@ document.addEventListener("click", async event => {
   if (action === "visit-resource") {
     const item = resources(true).find(r => r.id === id); if (!item) return;
     window.open(item.website, "_blank", "noopener,noreferrer");
-    item.views += 1;
-    renderApp(false);
-    apiRequest(`/api/resources/${encodeURIComponent(id)}/view`, { method: "POST", body: {} }).catch(() => {});
     return;
   }
   if (action === "share-resource") {
@@ -1131,7 +1206,6 @@ document.addEventListener("click", async event => {
     } catch (error) { showToast(error.message, "error"); }
     return;
   }
-  if (action === "reply-comment") return showToast("回复功能正在完善中");
   if (action === "delete-own-comment") {
     const target = comments().find(c => c.id === id);
     if (!target || target.userId !== state.currentUser?.id) return showToast("无权删除该评论", "error");
@@ -1186,18 +1260,26 @@ document.addEventListener("click", async event => {
     navigate("/"); showToast("已安全退出"); return;
   }
   if (action === "profile-tab") { state.profileTab = trigger.dataset.tab; return navigate("/profile", { tab: state.profileTab }); }
+  if (action === "refresh-admin-stats") {
+    trigger.disabled = true;
+    try { await loadAdminData(); renderApp(false); }
+    catch (error) { showToast(error.message, "error"); }
+    finally { trigger.disabled = false; }
+    return;
+  }
   if (action === "admin-tab") { state.adminTab = trigger.dataset.tab; return navigate("/admin", { tab: state.adminTab }); }
   if (action === "new-resource") return navigate("/submit", { type: "tool" });
   if (action === "edit-resource") return resourceEditorModal(resources(true).find(r => r.id === id));
-  if (action === "ai-assist") {
-    const name = document.querySelector("#admin-resource-name")?.value.trim();
-    const category = document.querySelector("#admin-resource-category")?.value;
-    if (!name) return showToast("请先填写工具名称", "error");
-    const short = document.querySelector("#admin-resource-short"); const tags = document.querySelector("#admin-resource-tags"); const desc = document.querySelector("#admin-resource-description");
-    short.value = `${name} 是一款面向真实工作场景的 ${category.replace("AI ", "")}工具，帮助用户更高效地完成创作与信息处理。`;
-    tags.value = "新手友好，效率提升，AI 工具";
-    desc.value = `${name} 聚焦于日常工作中的高频需求，通过清晰的交互与 AI 能力简化复杂流程。建议首次使用时从一个具体、边界清楚的小任务开始，逐步验证输出结果，并根据真实场景继续调整。此内容由 AI 辅助生成，发布前请人工核验功能与链接信息。`;
-    showToast("AI 已生成初稿，请人工复核后发布"); return;
+  if (action === "rich-command") {
+    const editor = trigger.closest(".rich-editor").querySelector("[contenteditable]");
+    editor.focus();
+    if (trigger.dataset.command === "link") {
+      const url = window.prompt("请输入完整链接（https://）");
+      if (url === null) return;
+      if (!safeRichLink(url)) return showToast("请输入有效的 http 或 https 链接", "error");
+      document.execCommand("createLink", false, safeRichLink(url));
+    } else document.execCommand(trigger.dataset.command, false, trigger.dataset.value || null);
+    return;
   }
   if (action === "toggle-resource-status") {
     const all = resources(true); const item = all.find(r => r.id === id); if (!item) return;
@@ -1230,12 +1312,34 @@ document.addEventListener("click", async event => {
   if (action === "show-policy") return openModal(modalFrame("发布与使用说明", "社区内容规则摘要", `<p class="rich-copy">工具和文章发布后直接展示，不进入预审队列。运营后台只处理用户提交的内容违规、疑似侵权、信息错误和链接失效反馈。</p><p class="rich-copy">本平台仅提供资源信息与外部链接导航，不托管第三方软件文件。所有外链会在新页面打开，请在离开本站后自行核验来源与安全性。</p>`));
 });
 
+document.addEventListener("keydown", event => {
+  if (!event.target.matches('#publish-channel [role="tab"]')) return;
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  const tabs = [...document.querySelectorAll('#publish-channel [role="tab"]')];
+  const index = tabs.indexOf(event.target);
+  const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+  tabs[next].click();
+});
+document.addEventListener("mousedown", event => {
+  if (event.target.closest('[data-action="rich-command"]')) event.preventDefault();
+});
+document.addEventListener("paste", event => {
+  if (!event.target.closest(".rich-editor-body")) return;
+  event.preventDefault();
+  document.execCommand("insertText", false, event.clipboardData.getData("text/plain"));
+});
+document.addEventListener("drop", event => {
+  if (event.target.closest(".rich-editor-body")) event.preventDefault();
+});
 document.addEventListener("input", event => {
+  if (event.target.closest(".publish-form")) savePublishDraft();
   if (event.target.id !== "global-search-input") return;
   document.querySelector(".global-search-clear")?.classList.toggle("hidden", !event.target.value);
 });
 
 document.addEventListener("change", async event => {
+  if (event.target.id === "publish-tool-type") state.toolChannel = event.target.value;
   if (event.target.id === "sort-select") updateRouteParams({ sort: event.target.value });
   if (event.target.id === "software-sort-select") updateRouteParams({ sort: event.target.value });
   if (event.target.id === "article-image-input") {
@@ -1327,12 +1431,12 @@ document.addEventListener("submit", async event => {
         name: String(data.get("name") || "").trim(),
         website: String(data.get("url") || "").trim(),
         channel: state.toolChannel,
-        category: String(data.get("category") || ""),
         tags: parseTags(data.get("tags")),
         summary: String(data.get("summary") || "").trim(),
         reason: String(data.get("reason") || "").trim(),
       } });
       await loadBootstrap();
+      delete state.publishDrafts.tool;
       showToast("工具已发布");
       return navigate(`/resource/${result.resource.id}`);
     } catch (error) { showToast(error.message, "error"); }
@@ -1351,10 +1455,11 @@ document.addEventListener("submit", async event => {
         excerpt: String(data.get("excerpt") || "").trim(),
         category: String(data.get("category") || ""),
         tags: parseTags(data.get("tags")),
-        body: String(data.get("body") || "").trim(),
+        body: readRichEditor(form.querySelector("[contenteditable]")),
         images,
       } });
       state.articleImagesDraft = [];
+      delete state.publishDrafts.article;
       await loadBootstrap();
       showToast("文章已发布");
       return navigate(`/article/${result.article.id}`);
@@ -1371,12 +1476,11 @@ document.addEventListener("submit", async event => {
       excerpt: String(data.get("excerpt") || "").trim(),
       category: String(data.get("category") || ""),
       tags: parseTags(data.get("tags")),
-      body: String(data.get("body") || "").trim(),
+      body: readRichEditor(form.querySelector("[contenteditable]")),
     } : {
       name: String(data.get("name") || "").trim(),
       website: String(data.get("url") || "").trim(),
       channel: String(data.get("channel") || ""),
-      category: String(data.get("category") || ""),
       tags: parseTags(data.get("tags")),
       summary: String(data.get("summary") || "").trim(),
       reason: String(data.get("reason") || "").trim(),
@@ -1429,7 +1533,7 @@ document.addEventListener("submit", async event => {
     try {
       const result = await apiRequest(`/api/admin/resources/${encodeURIComponent(existingId)}`, { method: "PATCH", body: {
         name: String(data.get("name") || "").trim(), website: String(data.get("website") || "").trim(), category: String(data.get("category") || "AI工具"),
-        subcategory: String(data.get("subcategory") || ""), tags: parseTags(data.get("tags")), short: String(data.get("short") || "").trim(),
+        tags: parseTags(data.get("tags")), short: String(data.get("short") || "").trim(),
         description: String(data.get("description") || "").trim(), status: String(data.get("status") || "online"),
       } });
       state.data.resources = resources(true).map(item => item.id === existingId ? result.resource : item);

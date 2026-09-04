@@ -1,3 +1,4 @@
+import { analyticsDay, analyticsWindow, summarizeVisits } from "./analytics.mjs";
 import { uid } from "./security.mjs";
 
 function json(value, fallback = []) {
@@ -47,7 +48,7 @@ function resource(row) {
     scenarios: json(row.scenarios),
     rating: Number(row.rating),
     ratings: Number(row.ratings_count),
-    views: Number(row.views_count),
+    views: Number(row.actual_views_count || 0),
     favorites: Number(row.favorites_count),
     updated: dateOnly(row.updated_at),
     created: dateOnly(row.created_at),
@@ -71,7 +72,7 @@ function article(row) {
     created: dateOnly(row.created_at),
     updated: dateOnly(row.updated_at),
     readTime: Number(row.read_time),
-    views: Number(row.views_count),
+    views: Number(row.actual_views_count || 0),
     favorites: Number(row.favorites_count),
     featured: Boolean(row.featured),
     status: row.status,
@@ -128,7 +129,7 @@ function report(row) {
   };
 }
 
-export function createRepository(db) {
+export function createRepository(db, { now = () => new Date() } = {}) {
   async function listResources(includeOffline = false) {
     const result = await db.query(`SELECT * FROM resources ${includeOffline ? "" : "WHERE status = 'online'"} ORDER BY created_at DESC`);
     return result.rows.map(resource);
@@ -271,7 +272,15 @@ export function createRepository(db) {
 
   async function incrementView(targetType, targetId) {
     const table = targetType === "article" ? "articles" : "resources";
-    await db.query(`UPDATE ${table} SET views_count=views_count+1 WHERE id=$1`, [targetId]);
+    const day = analyticsDay(now());
+    return db.transaction(async client => {
+      const result = await client.query(`UPDATE ${table} SET actual_views_count=actual_views_count+1 WHERE id=$1 AND status='online' RETURNING actual_views_count AS views`, [targetId]);
+      if (!result.rows[0]) throw Object.assign(new Error("内容不存在或已下架"), { statusCode: 404 });
+      await client.query(`INSERT INTO content_view_daily (day,resource_views,article_views) VALUES ($1,$2,$3)
+        ON CONFLICT (day) DO UPDATE SET resource_views=content_view_daily.resource_views+EXCLUDED.resource_views,
+        article_views=content_view_daily.article_views+EXCLUDED.article_views`, [day, targetType === "resource" ? 1 : 0, targetType === "article" ? 1 : 0]);
+      return Number(result.rows[0].views);
+    });
   }
 
   async function createComment({ resourceId, userId, rating, content }) {
@@ -368,12 +377,29 @@ export function createRepository(db) {
   }
 
   async function adminData() {
-    const [allResources, usersResult, reportsResult] = await Promise.all([
+    const timestamp = now();
+    const { from, today } = analyticsWindow(timestamp);
+    const [allResources, allArticles, usersResult, reportsResult, dailyResult, trackingResult] = await Promise.all([
       listResources(true),
+      listArticles(true),
       db.query("SELECT * FROM users ORDER BY created_at DESC"),
       db.query("SELECT * FROM reports ORDER BY created_at DESC"),
+      db.query("SELECT day,resource_views,article_views FROM content_view_daily WHERE day >= $1 AND day <= $2 ORDER BY day", [from, today]),
+      db.query("SELECT started_at FROM analytics_tracking WHERE name='content_views'"),
     ]);
-    return { resources: allResources, users: usersResult.rows.map(publicUser), reports: reportsResult.rows.map(report) };
+    if (!trackingResult.rows[0]) throw new Error("Analytics migration has not been applied");
+    return {
+      resources: allResources,
+      articles: allArticles,
+      users: usersResult.rows.map(publicUser),
+      reports: reportsResult.rows.map(report),
+      stats: {
+        publishedContent: allResources.filter(item => item.status === "online").length + allArticles.filter(item => item.status === "online").length,
+        registeredUsers: usersResult.rows.length,
+        pendingReports: reportsResult.rows.filter(item => item.status === "pending").length,
+        ...summarizeVisits(dailyResult.rows, trackingResult.rows[0].started_at, timestamp),
+      },
+    };
   }
 
   async function setResourceStatus(resourceId, status, actor) {
