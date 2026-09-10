@@ -1,346 +1,433 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
-import { readFile, readdir } from "node:fs/promises";
-import { newDb } from "pg-mem";
-import { createDatabase } from "../server/db.mjs";
-import { createRepository } from "../server/repository.mjs";
-import { createApp } from "../server/app.mjs";
-import { hashPassword } from "../server/security.mjs";
+import { context, resourceInput, articleInput } from "./helpers.mjs";
 
-async function createTestContext({ metadataReader, now, imageStore = async () => "/uploads/test.png" } = {}) {
-  const memory = newDb({ autoCreateForeignKeyIndices: true });
-  const adapter = memory.adapters.createPg();
-  const pool = new adapter.Pool();
-  const database = createDatabase(pool);
-  const migrationDirectory = new URL("../migrations/", import.meta.url);
-  for (const filename of (await readdir(migrationDirectory)).filter(name => name.endsWith(".sql")).sort()) {
-    await database.query(await readFile(new URL(filename, migrationDirectory), "utf8"));
-  }
-  const repository = createRepository(database, { now });
-  const admin = await repository.createUser({ email: "admin@example.com", passwordHash: await hashPassword("AdminPass123"), nickname: "管理员", role: "admin" });
-  let lastCode = "";
-  const app = createApp({
-    database,
-    repository,
-    metadataReader,
-    mailer: async ({ code }) => { lastCode = code; return { developmentCode: code }; },
-    imageStore,
-  });
-  const server = createServer(app.handler);
-  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  const baseURL = `http://127.0.0.1:${address.port}`;
-
-  async function request(path, { method = "GET", body, cookie, headers = {} } = {}) {
-    const response = await fetch(`${baseURL}${path}`, {
-      method,
-      headers: {
-        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-        ...(cookie ? { Cookie: cookie } : {}),
-        ...headers,
-      },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-    const data = response.status === 204 ? null : await response.json();
-    return { response, data, cookie: response.headers.get("set-cookie")?.split(";")[0] || "" };
-  }
-
-  return {
-    admin,
-    database,
-    repository,
-    request,
-    get lastCode() { return lastCode; },
-    async close() {
-      await new Promise(resolve => server.close(resolve));
-      await database.close();
-    },
-  };
-}
-
-test("registration, publishing and moderation use server state", async () => {
-  const context = await createTestContext();
+test("registration, login, publishing, favorites, discussion and moderation use server state", async () => {
+  const c = await context();
   try {
-    const health = await context.request("/api/health");
-    assert.equal(health.response.status, 200);
-    assert.equal(health.data.ok, true);
-
-    const code = await context.request("/api/auth/request-code", { method: "POST", body: { email: "user@example.com", purpose: "register" } });
-    assert.equal(code.response.status, 200);
-    assert.match(context.lastCode, /^\d{6}$/);
-
-    const registration = await context.request("/api/auth/register", {
+    assert.equal((await c.request("/api/health")).response.status, 200);
+    await c.request("/api/auth/request-code", {
       method: "POST",
-      body: { email: "user@example.com", nickname: "测试用户", password: "StrongPass123", code: context.lastCode, agreement: true },
+      body: { email: "new@example.com" },
     });
-    assert.equal(registration.response.status, 201);
-    assert.ok(registration.cookie.startsWith("shiqi_session="));
-    const userCookie = registration.cookie;
-
-    const createdTool = await context.request("/api/resources", {
+    assert.match(c.code, /^\d{6}$/);
+    const registered = await c.request("/api/auth/register", {
       method: "POST",
-      cookie: userCookie,
       body: {
-        name: "测试工具",
-        website: "https://example.com/tool",
-        channel: "AI工具",
-        category: "AI 对话写作",
-        tags: ["测试", "效率"],
-        summary: "帮助测试正式发布流程的示例工具。",
-        reason: "这是一次完整的服务端发布测试，用于确认内容和发布记录能在同一事务中写入数据库。",
+        email: "new@example.com",
+        nickname: "新作者",
+        password: "StrongPass123",
+        code: c.code,
+        agreement: true,
       },
     });
-    assert.equal(createdTool.response.status, 201);
-    const resourceId = createdTool.data.resource.id;
-
-    const favorite = await context.request("/api/favorites/toggle", { method: "POST", cookie: userCookie, body: { targetType: "resource", targetId: resourceId } });
-    assert.equal(favorite.response.status, 200);
-    assert.equal(favorite.data.favorite, true);
-
-    const comment = await context.request("/api/comments", { method: "POST", cookie: userCookie, body: { resourceId, rating: 5, content: "服务端评论发布正常。" } });
+    assert.equal(registered.response.status, 201);
+    const cookie = registered.cookie;
+    const created = await c.request("/api/resources", {
+      method: "POST",
+      cookie,
+      body: resourceInput,
+    });
+    assert.equal(created.response.status, 201, JSON.stringify(created.data));
+    const item = created.data.item;
+    assert.equal(item.freshness, "unverified");
+    assert.equal(item.featured, false);
+    const ref = { targetType: "resource", targetId: item.id };
+    assert.equal(
+      (
+        await c.request("/api/favorites/toggle", {
+          method: "POST",
+          cookie,
+          body: ref,
+        })
+      ).data.favorite,
+      true,
+    );
+    const comment = await c.request("/api/comments", {
+      method: "POST",
+      cookie,
+      body: { ...ref, content: "这个工作流的说明很清楚。" },
+    });
     assert.equal(comment.response.status, 201);
-    const firstLike = await context.request(`/api/comments/${comment.data.comment.id}/like`, { method: "POST", cookie: userCookie, body: {} });
-    const repeatedLike = await context.request(`/api/comments/${comment.data.comment.id}/like`, { method: "POST", cookie: userCookie, body: {} });
-    assert.equal(firstLike.data.added, true);
-    assert.equal(repeatedLike.data.added, false);
-
-    const upload = await context.request("/api/uploads/images", { method: "POST", cookie: userCookie, body: { images: ["data:image/png;base64,test"] } });
-    assert.equal(upload.response.status, 201);
+    const cid = comment.data.comment.id;
+    assert.equal(
+      (
+        await c.request(`/api/comments/${cid}/like`, {
+          method: "POST",
+          cookie,
+          body: {},
+        })
+      ).data.added,
+      true,
+    );
+    assert.equal(
+      (
+        await c.request(`/api/comments/${cid}/like`, {
+          method: "POST",
+          cookie,
+          body: {},
+        })
+      ).data.added,
+      false,
+    );
+    const upload = await c.request("/api/uploads/images", {
+      method: "POST",
+      cookie,
+      body: { images: ["data:image/png;base64,test"] },
+    });
     assert.deepEqual(upload.data.images, ["/uploads/test.png"]);
-
-    const createdArticle = await context.request("/api/articles", { method: "POST", cookie: userCookie, body: {
-      title: "服务端文章发布流程测试",
-      excerpt: "这是一篇用于验证文章、图片与个人发布记录同步写入数据库的测试文章。",
-      category: "工具教程",
-      tags: ["测试", "发布"],
-      images: upload.data.images,
-      body: "第一段用于验证文章正文能够通过服务端内容规则并写入数据库。这里提供足够长度的真实测试文字。\n\n第二段继续验证图文文章发布流程，确保返回的文章可以进入公开列表并出现在个人中心的发布记录中。",
-    } });
-    assert.equal(createdArticle.response.status, 201);
-
-    const report = await context.request("/api/reports", { method: "POST", cookie: userCookie, body: { targetId: resourceId, targetType: "resource", type: "信息错误", detail: "用于验证举报处理流程。" } });
-    assert.equal(report.response.status, 201);
-
-    const dashboard = await context.request("/api/me/dashboard", { cookie: userCookie });
-    assert.equal(dashboard.response.status, 200);
-    assert.equal(dashboard.data.submissions.length, 2);
-    assert.deepEqual(dashboard.data.favorites, [{ type: "resource", id: resourceId }]);
-
-    const adminLogin = await context.request("/api/auth/login", { method: "POST", body: { email: "admin@example.com", password: "AdminPass123" } });
-    assert.equal(adminLogin.response.status, 200);
-    const adminData = await context.request("/api/admin/data", { cookie: adminLogin.cookie });
-    assert.equal(adminData.response.status, 200);
-    assert.equal(adminData.data.reports.length, 1);
-
-    const edited = await context.request(`/api/admin/resources/${resourceId}`, { method: "PATCH", cookie: adminLogin.cookie, body: {
-      name: "管理员更新后的测试工具",
-      website: "https://example.com/tool-updated",
-      category: "AI工具",
-      subcategory: "AI 对话写作",
-      tags: ["测试", "维护"],
-      short: "管理员已经通过服务端接口更新了这条测试工具信息。",
-      description: "管理员更新详细介绍，用来验证后台编辑不会再写入浏览器本地存储，并且可以留下操作审计记录。",
-      status: "online",
-    } });
-    assert.equal(edited.response.status, 200);
-    assert.equal(edited.data.resource.name, "管理员更新后的测试工具");
-
-    const resolved = await context.request(`/api/admin/reports/${report.data.report.id}`, { method: "PATCH", cookie: adminLogin.cookie, body: { status: "resolved" } });
-    assert.equal(resolved.response.status, 200);
-    assert.equal(resolved.data.status, "resolved");
+    const adminCookie = await c.login("admin@example.com", "AdminPass123");
+    const blocked = await c.request(
+      `/api/admin/resources/${item.id}/moderate`,
+      {
+        method: "POST",
+        cookie: adminCookie,
+        body: { action: "feature", reason: "尝试未核验精选", revision: 1 },
+      },
+    );
+    assert.equal(blocked.response.status, 409);
+    const hidden = await c.request(`/api/admin/resources/${item.id}/moderate`, {
+      method: "POST",
+      cookie: adminCookie,
+      body: { action: "exclude", reason: "核对后确认非 AI 内容", revision: 1 },
+    });
+    assert.equal(hidden.response.status, 200);
+    assert.equal((await c.request("/api/resources")).data.total, 0);
+    assert.equal(
+      (await c.request(`/api/resources/${item.id}`)).response.status,
+      410,
+    );
+    assert.equal(
+      (
+        await c.request("/api/favorites/toggle", {
+          method: "POST",
+          cookie,
+          body: ref,
+        })
+      ).data.favorite,
+      false,
+    );
   } finally {
-    await context.close();
+    await c.close();
   }
 });
 
-test("authentication and mutation routes enforce permissions", async () => {
-  const context = await createTestContext();
+test("authentication, ownership, origin and retired routes cannot bypass content policy", async () => {
+  const c = await context();
   try {
-    const anonymousPublish = await context.request("/api/resources", { method: "POST", body: {} });
-    assert.equal(anonymousPublish.response.status, 401);
-
-    const badLogin = await context.request("/api/auth/login", { method: "POST", body: { email: "admin@example.com", password: "wrong-password" } });
-    assert.equal(badLogin.response.status, 401);
-
-    const bootstrap = await context.request("/api/bootstrap");
-    assert.equal(bootstrap.response.status, 200);
-    assert.equal(bootstrap.data.currentUser, null);
-    assert.deepEqual(bootstrap.data.resources, []);
-
-    const foreignOrigin = await context.request("/api/auth/login", { method: "POST", headers: { Origin: "https://attacker.example" }, body: { email: "admin@example.com", password: "AdminPass123" } });
-    assert.equal(foreignOrigin.response.status, 403);
-
-    await context.request("/api/auth/request-code", { method: "POST", body: { email: "admin@example.com", purpose: "reset" } });
-    const reset = await context.request("/api/auth/reset-password", { method: "POST", body: { email: "admin@example.com", code: context.lastCode, password: "ChangedPass123" } });
-    assert.equal(reset.response.status, 200);
-    const changedLogin = await context.request("/api/auth/login", { method: "POST", body: { email: "admin@example.com", password: "ChangedPass123" } });
-    assert.equal(changedLogin.response.status, 200);
+    assert.equal(
+      (
+        await c.request("/api/resources", {
+          method: "POST",
+          body: resourceInput,
+        })
+      ).response.status,
+      401,
+    );
+    const cookie = await c.login("user@example.com", "StrongPass123"),
+      adminCookie = await c.login("admin@example.com", "AdminPass123");
+    assert.equal(
+      (await c.request("/api/admin/data", { cookie })).response.status,
+      403,
+    );
+    assert.equal(
+      (
+        await c.request("/api/resources", {
+          method: "POST",
+          cookie,
+          body: { ...resourceInput, channel: "软件工具" },
+        })
+      ).response.status,
+      400,
+    );
+    assert.equal(
+      (
+        await c.request("/api/resources", {
+          method: "POST",
+          cookie,
+          body: { ...resourceInput, kind: "software" },
+        })
+      ).response.status,
+      400,
+    );
+    assert.equal(
+      (
+        await c.request("/api/resources", {
+          method: "POST",
+          cookie,
+          body: resourceInput,
+          headers: { Origin: "https://evil.example" },
+        })
+      ).response.status,
+      403,
+    );
+    const created = await c.service.save("resource", resourceInput, c.admin),
+      id = created.item.id;
+    assert.equal(
+      (
+        await c.request(`/api/resources/${id}`, {
+          method: "PATCH",
+          cookie,
+          body: { revision: 1, name: "非法改名" },
+        })
+      ).response.status,
+      403,
+    );
+    assert.equal(
+      (
+        await c.request(`/api/admin/resources/${id}`, {
+          method: "PATCH",
+          cookie: adminCookie,
+          body: { status: "online" },
+        })
+      ).response.status,
+      404,
+    );
+    assert.equal(
+      (
+        await c.request("/api/submissions/old-id", {
+          method: "PATCH",
+          cookie,
+          body: {},
+        })
+      ).response.status,
+      404,
+    );
+    assert.equal((await c.request("/server/config.mjs")).response.status, 404);
+    assert.equal((await c.request("/.env")).response.status, 404);
+    const banned = await c.request(`/api/admin/users/${c.user.id}/status`, {
+      method: "PATCH",
+      cookie: adminCookie,
+      body: { status: "banned" },
+    });
+    assert.equal(banned.response.status, 200);
+    assert.equal(
+      (await c.request("/api/me/dashboard", { cookie })).response.status,
+      401,
+    );
   } finally {
-    await context.close();
+    await c.close();
   }
 });
 
-test("online publishing, optional rich article summaries, metadata and real views round trip", async () => {
-  const context = await createTestContext({ metadataReader: async () => ({ image: "https://example.com/og.png", title: "示例", description: "用于验证的官网介绍，内容来源于公开网站。" }) });
+test("AI domains, external media, rich articles, related resources and true visits round trip", async () => {
+  const c = await context();
   try {
-    const login = await context.request("/api/auth/login", { method: "POST", body: { email: "admin@example.com", password: "AdminPass123" } });
-    const cookie = login.cookie;
-    const tool = await context.request("/api/resources", { method: "POST", cookie, body: { name: "在线测试工具", website: "https://example.com", channel: "在线工具", category: "在线工具", summary: "支持在线处理常见任务的示例工具。", reason: "提供在线使用入口与具体使用场景，供测试发布、分类和浏览量统计功能。", tags: ["测试"] } });
-    assert.equal(tool.response.status, 201);
-    const id = tool.data.resource.id;
-    assert.equal(tool.data.resource.category, "软件工具");
-    assert.equal(tool.data.resource.subcategory, "在线工具");
-    assert.equal(tool.data.resource.views, 0);
-    await context.database.query("UPDATE resources SET views_count=99000 WHERE id=$1", [id]);
-    assert.equal((await context.request(`/api/resources/${id}/view`, { method: "POST", body: {} })).data.views, 1);
-    assert.equal((await context.request(`/api/resources/${id}/view`, { method: "POST", body: {} })).data.views, 2);
-    assert.equal((await context.request(`/api/resources/missing/view`, { method: "POST", body: {} })).response.status, 404);
-    assert.equal((await context.request(`/api/resources/${id}/metadata`)).data.image, "https://example.com/og.png");
-    const richBody = [{ type: "h2", content: [{ text: "学习方法", bold: true }] }, { type: "p", content: [{ text: "从真实场景开始学习，记录操作过程并及时总结结果。".repeat(5), italic: true }] }, { type: "ol", items: [[{ text: "查看文档", href: "https://example.com/" }], [{ text: "执行步骤" }]] }];
-    const article = await context.request("/api/articles", { method: "POST", cookie, body: { title: "可以留空摘要的富文本文章", category: "学习方法", body: richBody } });
-    assert.equal(article.response.status, 201);
-    assert.equal(article.data.article.excerpt, "");
-    assert.deepEqual(article.data.article.body, richBody);
-    const dashboard = await context.request("/api/me/dashboard", { cookie });
-    const submission = dashboard.data.submissions.find(item => item.targetId === article.data.article.id);
-    const update = await context.request(`/api/submissions/${submission.id}`, { method: "PATCH", cookie, body: { title: "更新后的富文本学习文章", category: "学习方法", excerpt: "", body: richBody } });
-    assert.equal(update.response.status, 200);
-    const bootstrap = await context.request("/api/bootstrap");
-    assert.deepEqual(bootstrap.data.articles.find(item => item.id === article.data.article.id).body, richBody);
-    assert.equal(bootstrap.data.resources.find(item => item.id === id).views, 2);
-  } finally { await context.close(); }
+    const cookie = await c.login("user@example.com", "StrongPass123");
+    const r = await c.request("/api/resources", {
+      method: "POST",
+      cookie,
+      body: {
+        ...resourceInput,
+        domain: "audio",
+        industries: ["服装"],
+        links: [
+          {
+            kind: "audio",
+            label: "授权配音样例",
+            url: "https://example.com/sample.mp3",
+          },
+        ],
+        details: {
+          ...resourceInput.details,
+          rights: "使用本人授权声音，仅限测试展示",
+        },
+      },
+    });
+    assert.equal(r.response.status, 201, JSON.stringify(r.data));
+    const a = await c.request("/api/articles", {
+      method: "POST",
+      cookie,
+      body: {
+        ...articleInput,
+        domain: "video",
+        resourceIds: [r.data.item.id],
+        body: [
+          ...articleInput.body,
+          { type: "code", language: "json", text: '{"input":"sketch"}' },
+          {
+            type: "image",
+            src: "https://example.com/result.png",
+            alt: "AI 生成结果",
+          },
+        ],
+      },
+    });
+    assert.equal(a.response.status, 201, JSON.stringify(a.data));
+    assert.equal(a.data.relatedResources.length, 1);
+    const get = await c.request(`/articles/${a.data.item.id}`);
+    assert.equal(get.response.status, 200);
+    assert.match(get.data, /建筑草图到 AI 方案/);
+    assert.match(get.data, /data-copy-code/);
+    assert.match(get.data, /noindex,follow/);
+    assert.equal(
+      (await c.request("/api/articles?domain=video&industry=建筑")).data.total,
+      1,
+    );
+    assert.equal(
+      (await c.request("/api/resources?industry=服装")).data.total,
+      1,
+    );
+    await c.request(`/api/articles/${a.data.item.id}/view`, {
+      method: "POST",
+      body: {},
+    });
+    assert.equal(
+      (await c.request(`/api/articles/${a.data.item.id}`)).data.item.views,
+      1,
+    );
+    const commented = await c.request("/api/comments", {
+      method: "POST",
+      cookie,
+      body: {
+        targetType: "article",
+        targetId: a.data.item.id,
+        content: "按步骤复现成功",
+      },
+    });
+    assert.equal(commented.response.status, 201);
+    const body = {
+      targetType: "article",
+      targetId: a.data.item.id,
+      revision: 1,
+      outcome: "partial",
+      environment: "测试环境",
+      content: "缺少输入条件",
+    };
+    await c.request("/api/feedback", { method: "POST", cookie, body });
+    await c.request("/api/feedback", {
+      method: "POST",
+      cookie,
+      body: { ...body, outcome: "success" },
+    });
+    const d = await c.request(`/api/articles/${a.data.item.id}`);
+    assert.deepEqual(d.data.feedback, [{ outcome: "success", count: 1 }]);
+    assert.equal(d.data.comments[0].rating, null);
+    const bootstrap = await c.request("/api/bootstrap");
+    assert.equal(bootstrap.data.comments, undefined);
+    assert.ok(bootstrap.data.home.resources.items.length <= 6);
+  } finally {
+    await c.close();
+  }
 });
 
-test("tools publish and remain editable without a secondary category or introduction", async () => {
-  const context = await createTestContext();
+test("minimal AI resources remain editable; original tutorials need no external source", async () => {
+  const c = await context();
   try {
-    const login = await context.request("/api/auth/login", { method: "POST", body: { email: "admin@example.com", password: "AdminPass123" } });
-    const cookie = login.cookie;
-    for (const channel of ["AI工具", "软件工具", "在线工具"]) {
-      const fields = { name: `精简发布${channel}`, website: "https://example.com/", channel, reason: "记录具体使用场景和实际操作过程，提供足够的信息帮助读者判断是否适合自己。", tags: [] };
-      const result = await context.request("/api/resources", { method: "POST", cookie, body: fields });
-      assert.equal(result.response.status, 201);
-      assert.equal(result.data.resource.short, "");
-      assert.equal(result.data.resource.subcategory, channel === "在线工具" ? "在线工具" : "");
-      assert.equal(result.data.resource.description, fields.reason);
-      const dashboard = await context.request("/api/me/dashboard", { cookie });
-      const submission = dashboard.data.submissions.find(item => item.targetId === result.data.resource.id);
-      const edited = await context.request(`/api/submissions/${submission.id}`, { method: "PATCH", cookie, body: { ...fields, summary: "简短" } });
-      assert.equal(edited.response.status, 200);
-      const adminEdit = await context.request(`/api/admin/resources/${result.data.resource.id}`, { method: "PATCH", cookie, body: { name: fields.name, website: fields.website, category: channel, description: fields.reason, status: "online" } });
-      assert.equal(adminEdit.response.status, 200);
-      assert.equal(adminEdit.data.resource.short, "");
-      assert.equal(adminEdit.data.resource.subcategory, channel === "在线工具" ? "在线工具" : "");
-    }
-  } finally { await context.close(); }
+    const r = await c.service.save(
+      "resource",
+      {
+        name: "测试 AI 入口",
+        domain: "coding",
+        kind: "tool",
+        aiUse: "用 AI 完成应用代码生成和调试测试。",
+        website: "https://example.com",
+      },
+      c.user,
+    );
+    assert.equal(r.item.revision, 1);
+    const updated = await c.service.save(
+      "resource",
+      { revision: 1, name: "更新后的 AI 入口" },
+      c.user,
+      r.item.id,
+    );
+    assert.equal(updated.item.revision, 1);
+    const original = await c.service.save("article", articleInput, c.user);
+    assert.equal(original.links.length, 0);
+    await assert.rejects(
+      c.service.save(
+        "article",
+        { ...articleInput, details: { origin: "repost" } },
+        c.user,
+      ),
+      /来源/,
+    );
+    const cookie = await c.login("user@example.com", "StrongPass123");
+    const dashboard = await c.request("/api/me/dashboard", { cookie });
+    assert.equal(
+      dashboard.response.status,
+      200,
+      JSON.stringify(dashboard.data),
+    );
+    assert.equal(dashboard.data.resources.total, 1);
+    assert.equal(dashboard.data.articles.total, 1);
+    const adminCookie = await c.login("admin@example.com", "AdminPass123");
+    const admin = await c.request("/api/admin/data", { cookie: adminCookie });
+    assert.equal(admin.response.status, 200, JSON.stringify(admin.data));
+  } finally {
+    await c.close();
+  }
 });
 
-test("admin analytics count recorded visits across Shanghai day/month boundaries and ignore legacy counters", async () => {
-  let timestamp = new Date("2026-08-31T15:59:59Z");
-  const context = await createTestContext({ now: () => timestamp });
+test("analytics follow Shanghai day boundaries and ignore legacy demo counts", async () => {
+  let now = new Date("2026-01-31T15:59:59Z");
+  const c = await context({ now: () => now });
   try {
-    await context.database.query("UPDATE analytics_tracking SET started_at=$1 WHERE name='content_views'", [new Date("2026-08-31T00:00:00Z")]);
-    const login = await context.request("/api/auth/login", { method: "POST", body: { email: "admin@example.com", password: "AdminPass123" } });
-    const cookie = login.cookie;
-    let result = await context.request("/api/admin/data", { cookie });
-    assert.equal(result.data.stats.registeredUsers, 1);
-    assert.equal(result.data.stats.publishedContent, 0);
-    assert.equal(result.data.stats.monthViews, 0);
-    assert.deepEqual(result.data.stats.trend.map(entry => entry.views), [null, null, null, null, null, null, 0]);
-    const created = await context.request("/api/resources", { method: "POST", cookie, body: { name: "真实统计工具", website: "https://example.com/", channel: "AI工具", reason: "这条工具用于验证真实访问记录，详情浏览与后台统计应保持一致且不受演示计数影响。" } });
-    const resourceId = created.data.resource.id;
-    const article = await context.request("/api/articles", { method: "POST", cookie, body: { title: "真实文章访问统计测试", category: "学习方法", body: "从实际问题出发，记录使用方法、实践过程与结果，检查访问统计是否使用真实记录。".repeat(3) } });
-    const articleId = article.data.article.id;
-    await context.database.query("UPDATE resources SET views_count=86000 WHERE id=$1", [resourceId]);
-    await context.database.query("UPDATE articles SET views_count=72000 WHERE id=$1", [articleId]);
-    await context.request(`/api/resources/${resourceId}/view`, { method: "POST", body: {} });
-    await context.request(`/api/articles/${articleId}/view`, { method: "POST", body: {} });
-    result = await context.request("/api/admin/data", { cookie });
-    assert.equal(result.data.stats.monthViews, 2);
-    assert.equal(result.data.stats.publishedContent, 2);
-    assert.equal(result.data.resources[0].views, 1);
-    assert.equal(result.data.articles[0].views, 1);
-
-    timestamp = new Date("2026-08-31T16:00:00Z"); // September 1, 00:00 in Shanghai.
-    const visits = await Promise.all(Array.from({ length: 5 }, () => context.request(`/api/resources/${resourceId}/view`, { method: "POST", body: {} })));
-    assert.ok(visits.every(item => item.response.status === 200));
-    await context.request(`/api/articles/${articleId}/view`, { method: "POST", body: {} });
-    const report = await context.request("/api/reports", { method: "POST", cookie, body: { targetId: resourceId, targetType: "resource", type: "信息错误", detail: "等待处理的真实测试举报。" } });
-    result = await context.request("/api/admin/data", { cookie });
-    assert.equal(result.data.stats.monthViews, 6);
-    assert.equal(result.data.stats.pendingReports, 1);
-    assert.equal(result.data.stats.registeredUsers, 1);
-    assert.deepEqual(result.data.stats.trend.slice(-2), [{ day: "2026-08-31", views: 2 }, { day: "2026-09-01", views: 6 }]);
-    assert.equal(result.data.resources[0].views, 6);
-    assert.equal(result.data.articles[0].views, 2);
-    assert.equal(result.data.stats.updatedAt, timestamp.toISOString());
-
-    await context.request(`/api/admin/resources/${resourceId}/status`, { method: "PATCH", cookie, body: { status: "offline" } });
-    assert.equal((await context.request(`/api/resources/${resourceId}/view`, { method: "POST", body: {} })).response.status, 404);
-    assert.equal((await context.request("/api/articles/missing/view", { method: "POST", body: {} })).response.status, 404);
-    await context.request(`/api/admin/reports/${report.data.report.id}`, { method: "PATCH", cookie, body: { status: "resolved" } });
-    result = await context.request("/api/admin/data", { cookie });
-    assert.equal(result.data.stats.publishedContent, 1);
-    assert.equal(result.data.stats.monthViews, 6);
-    assert.equal(result.data.stats.pendingReports, 0);
-
-    // Read through a new repository instance: counters live in the database.
-    const restartedRepository = createRepository(context.database, { now: () => timestamp });
-    assert.equal((await restartedRepository.adminData()).stats.monthViews, 6);
-    timestamp = new Date("2026-09-01T16:00:00Z");
-    result = await context.request("/api/admin/data", { cookie });
-    assert.deepEqual(result.data.stats.trend.at(-1), { day: "2026-09-02", views: 0 });
-    assert.equal(result.data.stats.monthViews, 6);
-    assert.equal((await context.request("/api/admin/data")).response.status, 401);
-  } finally { await context.close(); }
+    const { item } = await c.service.save("resource", resourceInput, c.user);
+    await c.database.query(
+      "UPDATE resources SET views_count=9999,rating=5,ratings_count=100,favorites_count=99 WHERE id=$1",
+      [item.id],
+    );
+    await c.repository.incrementView("resource", item.id);
+    now = new Date("2026-01-31T16:00:01Z");
+    await c.repository.incrementView("resource", item.id);
+    const rows = (
+      await c.database.query("SELECT * FROM content_view_daily ORDER BY day")
+    ).rows;
+    assert.equal(rows.length, 2);
+    assert.equal(Number(rows[0].resource_views), 1);
+    const d = await c.service.detail("resource", item.id);
+    assert.equal(d.item.views, 2);
+    assert.equal(d.item.favorites, 0);
+    assert.equal(d.item.rating, null);
+  } finally {
+    await c.close();
+  }
 });
 
-
-test("optional uploaded tool covers persist through publishing and both editing interfaces", async () => {
-  let uploadCount = 0;
-  const context = await createTestContext({ imageStore: async () => `/uploads/cover-${++uploadCount}.png` });
+test("uploaded covers persist and cosmetic edits never refresh verification timestamps", async () => {
+  const c = await context();
   try {
-    await context.repository.createUser({ email: "publisher@example.com", passwordHash: await hashPassword("PublisherPass123"), nickname: "封面发布者" });
-    const user = await context.request("/api/auth/login", { method: "POST", body: { email: "publisher@example.com", password: "PublisherPass123" } });
-    const admin = await context.request("/api/auth/login", { method: "POST", body: { email: "admin@example.com", password: "AdminPass123" } });
-    const fields = { name: "可选封面测试工具", website: "https://example.com/", channel: "在线工具", reason: "用于验证用户上传图片后能正常发布和编辑，并确保没有封面的现有内容仍然可以使用。" };
-    const noCover = await context.request("/api/resources", { method: "POST", cookie: user.cookie, body: fields });
-    assert.equal(noCover.response.status, 201);
-    assert.equal(noCover.data.resource.coverImage, "");
-    assert.equal((await context.request("/api/uploads/images", { method: "POST", body: { images: ["data:image/png;base64,test"] } })).response.status, 401);
-    const upload = await context.request("/api/uploads/images", { method: "POST", cookie: user.cookie, body: { images: ["data:image/png;base64,test"] } });
-    assert.equal(upload.response.status, 201);
-    const originalImage = upload.data.images[0];
-    const published = await context.request("/api/resources", { method: "POST", cookie: user.cookie, body: { ...fields, coverImage: originalImage } });
-    assert.equal(published.response.status, 201);
-    const id = published.data.resource.id;
-    assert.equal(published.data.resource.coverImage, originalImage);
-    const getCover = async () => (await context.request("/api/bootstrap")).data.resources.find(item => item.id === id).coverImage;
-    assert.equal(await getCover(), originalImage);
-    const dashboard = await context.request("/api/me/dashboard", { cookie: user.cookie });
-    const submission = dashboard.data.submissions.find(item => item.targetId === id);
-    const edit = (body, cookie = user.cookie) => context.request(`/api/submissions/${submission.id}`, { method: "PATCH", cookie, body: { ...fields, ...body } });
-    assert.equal((await edit({ summary: "修改介绍，保留原图" })).response.status, 200);
-    assert.equal(await getCover(), originalImage);
-    assert.equal((await edit({ coverImage: "" }, admin.cookie)).response.status, 403);
-    assert.equal(await getCover(), originalImage);
-    const replacement = (await context.request("/api/uploads/images", { method: "POST", cookie: user.cookie, body: { images: ["data:image/png;base64,test"] } })).data.images[0];
-    assert.equal((await edit({ coverImage: replacement })).response.status, 200);
-    assert.equal(await getCover(), replacement);
-    const adminFields = { name: fields.name, website: fields.website, category: "在线工具", description: fields.reason, status: "online" };
-    const adminEdit = (body, cookie = admin.cookie) => context.request(`/api/admin/resources/${id}`, { method: "PATCH", cookie, body: { ...adminFields, ...body } });
-    assert.equal((await adminEdit({})).response.status, 200);
-    assert.equal(await getCover(), replacement);
-    assert.equal((await adminEdit({ coverImage: "" }, user.cookie)).response.status, 403);
-    for (const coverImage of ["https://example.com/cover.png", "/uploads/../secret.png", "/uploads/%2e%2e/secret.png", "/uploads-evil/cover.png", "/uploads/cover.svg", "data:image/png;base64,test", { image: originalImage }]) {
-      assert.equal((await adminEdit({ coverImage })).response.status, 400);
-    }
-    assert.equal(await getCover(), replacement);
-    assert.equal((await edit({ coverImage: "" })).response.status, 200);
-    assert.equal(await getCover(), "");
-    assert.equal((await adminEdit({ coverImage: originalImage })).data.resource.coverImage, originalImage);
-    assert.equal((await adminEdit({ coverImage: "" })).data.resource.coverImage, "");
-    assert.equal((await context.database.query("SELECT cover_image FROM resources WHERE id=$1", [id])).rows[0].cover_image, "");
-  } finally { await context.close(); }
+    const { item } = await c.service.save(
+      "resource",
+      { ...resourceInput, coverImage: "/uploads/test.png" },
+      c.user,
+    );
+    await c.service.verify(
+      { type: "resource", id: item.id },
+      {
+        revision: 1,
+        method: "editor_tested",
+        environment: "测试环境 v1",
+        evidence: "使用指定输入在当前环境完成了可重复的测试。",
+      },
+      c.admin,
+    );
+    const before = await c.service.detail("resource", item.id);
+    const after = await c.service.save(
+      "resource",
+      {
+        revision: 1,
+        tags: ["新标签"],
+        coverImage: "https://example.com/new-cover.png",
+      },
+      c.user,
+      item.id,
+    );
+    assert.equal(after.item.revision, 1);
+    assert.equal(after.item.verifiedAt, before.item.verifiedAt);
+    assert.equal(after.item.cover, "https://example.com/new-cover.png");
+    await assert.rejects(
+      c.service.save(
+        "resource",
+        { revision: 1, coverImage: "/uploads/../private.png" },
+        c.user,
+        item.id,
+      ),
+      /图片/,
+    );
+  } finally {
+    await c.close();
+  }
 });

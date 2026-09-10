@@ -1,36 +1,26 @@
-import { createServer } from "node:http";
-import { readFile, readdir } from "node:fs/promises";
 import { newDb } from "pg-mem";
 import { createDatabase } from "../server/db.mjs";
-import { createRepository } from "../server/repository.mjs";
+import { migrateDatabase } from "../server/migrations.mjs";
 import { seedDatabase } from "../server/seed.mjs";
-import { createApp } from "../server/app.mjs";
+import { startServer } from "../server/app.mjs";
 import { config } from "../server/config.mjs";
-
-const memory = newDb({ autoCreateForeignKeyIndices: true });
+const memory = newDb({
+  autoCreateForeignKeyIndices: true,
+  noAstCoverageCheck: true,
+});
 const adapter = memory.adapters.createPg();
 const database = createDatabase(new adapter.Pool());
-const migrationDirectory = new URL("../migrations/", import.meta.url);
-for (const filename of (await readdir(migrationDirectory)).filter(name => name.endsWith(".sql")).sort()) {
-  await database.query(await readFile(new URL(filename, migrationDirectory), "utf8"));
-}
+await migrateDatabase(database);
 await seedDatabase(database, { production: false });
-
-const repository = createRepository(database);
-const app = createApp({ database, repository });
-await repository.deleteExpiredSessions();
-const server = createServer(app.handler);
-await new Promise((resolve, reject) => {
-  server.once("error", reject);
-  server.listen(config.port, config.host, resolve);
-});
-
-console.log(`拾器内存开发服务器：http://${config.host}:${config.port}`);
-
-async function shutdown() {
-  await new Promise(resolve => server.close(resolve));
+const app = await startServer({ database });
+console.log(
+  `拾器内存开发服务器：http://${config.host}:${config.port}（进程退出后数据清空）`,
+);
+const shutdown = async () => {
+  app.maintenance.stop();
+  app.server.closeAllConnections();
+  await new Promise((r) => app.server.close(r));
   await database.close();
-}
-
-process.once("SIGINT", () => shutdown().finally(() => process.exit(0)));
-process.once("SIGTERM", () => shutdown().finally(() => process.exit(0)));
+};
+process.once("SIGINT", () => shutdown().finally(() => process.exit()));
+process.once("SIGTERM", () => shutdown().finally(() => process.exit()));

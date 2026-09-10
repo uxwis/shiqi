@@ -6,3 +6,7 @@ coverage
 uploads/*
 !uploads/.gitkeep
 *.log
+
+.tools
+playwright-report
+test-results

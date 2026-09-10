@@ -17,6 +17,7 @@ services:
     build: .
     environment:
       NODE_ENV: development
+      SEED_ON_START: "true"
       HOST: 0.0.0.0
       PORT: 4173
       APP_ORIGIN: http://127.0.0.1:4173
