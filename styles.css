@@ -493,6 +493,11 @@ p {
   font-weight: 400;
   color: #a3b0aa;
 }
+.domain-grid a:hover b,
+.domain-grid a:focus-visible,
+.domain-grid a:focus-visible b {
+  color: var(--green);
+}
 .section {
   margin: 44px 0;
 }

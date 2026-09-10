@@ -71,8 +71,19 @@ const verificationMethodLabels = {
   editor_tested: "编辑实际测试",
 };
 function usageVerificationHTML(item, verifications, revisions) {
-  const records = verifications.map(v => `<div><span class="timeline-dot"></span><strong>${e(verificationMethodLabels[v.method] || "使用验证")} · v${v.revision}</strong><small>${date(v.created_at)} · ${e(v.actor_name)}</small><p>环境：${e(v.environment)}</p><p>${e(v.evidence)}</p></div>`).join("") +
-    revisions.map(r => `<div><span class="timeline-dot"></span><strong>内容修订 v${r.revision}</strong><small>${date(r.created_at)}</small><p>${e(r.summary)}</p></div>`).join("");
+  const records =
+    verifications
+      .map(
+        (v) =>
+          `<div><span class="timeline-dot"></span><strong>${e(verificationMethodLabels[v.method] || "使用验证")} · v${v.revision}</strong><small>${date(v.created_at)} · ${e(v.actor_name)}</small><p>环境：${e(v.environment)}</p><p>${e(v.evidence)}</p></div>`,
+      )
+      .join("") +
+    revisions
+      .map(
+        (r) =>
+          `<div><span class="timeline-dot"></span><strong>内容修订 v${r.revision}</strong><small>${date(r.created_at)}</small><p>${e(r.summary)}</p></div>`,
+      )
+      .join("");
   return `<section class="usage-verification" id="usage-verification" aria-labelledby="usage-verification-heading"><h2 id="usage-verification-heading">使用验证</h2><p class="verification-summary${item.freshness === "review_due" ? " needs-review" : ""}">${e(usageVerificationLabels[item.freshness] || usageVerificationLabels.unverified)}</p><dl><div><dt>适用内容版本</dt><dd>v${item.revision}</dd></div><div><dt>最近验证</dt><dd>${item.verifiedAt ? date(item.verifiedAt) : "暂无当前版本记录"}</dd></div><div><dt>下次确认</dt><dd>${item.reviewDueAt ? date(item.reviewDueAt) : "尚未安排"}</dd></div></dl><details class="verification-records"><summary>查看验证环境与修订记录</summary><div class="timeline">${records || '<p class="muted">尚无验证或修订记录。</p>'}</div></details></section>`;
 }
 function detailHTML(data, user) {
@@ -285,7 +296,9 @@ export async function renderPage(url, service, user) {
         "让资源跟上 AI 的变化。",
         "新发布、实质更新与完成核验分别记录，推荐不改变更新时间。",
       ) +
-      `<div class="updates-list">${result.items.map((i) => `<a href="${contentPath(i.target_type, i.target_id)}"><span class="badge">${{ published: "新发布", updated: "内容更新", verified: "完成核验" }[i.event]}</span><div><h3>${e(i.title)}</h3><p>v${i.revision} · ${e(VERIFICATION_LABELS[i.summary] || i.summary)}</p></div><time>${date(i.event_at)}</time><b>↗</b></a>`).join("") || empty("暂时没有更新记录")}</div>` +
+      (result.items.length
+        ? `<div class="updates-list">${result.items.map((i) => `<a href="${contentPath(i.target_type, i.target_id)}"><span class="badge">${{ published: "新发布", updated: "内容更新", verified: "完成核验" }[i.event]}</span><div><h3>${e(i.title)}</h3><p>v${i.revision} · ${e(VERIFICATION_LABELS[i.summary] || i.summary)}</p></div><time>${date(i.event_at)}</time><b>↗</b></a>`).join("")}</div>`
+        : empty("暂时没有更新记录")) +
       pager(result, path, query);
   } else if (path === "/search") {
     title = "搜索";
