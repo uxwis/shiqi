@@ -155,13 +155,13 @@ if (typeof document !== "undefined") {
     };
     sync();
   });
-  document.querySelectorAll("form[data-action]").forEach((form) =>
+  document.querySelectorAll('form[data-action="comment"]').forEach((form) =>
     form.addEventListener("submit", (event) => {
       event.preventDefault();
       if (!state.user) return login();
       submitSafely(form, async () => {
         await api(
-          form.dataset.action === "comment" ? "/api/comments" : "/api/feedback",
+          "/api/comments",
           {
             method: "POST",
             body: {

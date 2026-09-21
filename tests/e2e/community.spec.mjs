@@ -89,12 +89,34 @@ for (const width of [360, 768, 1440])
     await expect(
       page.getByRole("button", { name: "已收藏", exact: true }),
     ).toBeVisible();
-    await page
-      .locator("form[data-action=feedback]")
-      .getByLabel("版本与使用环境")
-      .fill("浏览器测试环境 " + width);
-    await page.getByRole("button", { name: "提交 / 更新反馈" }).click();
+    const discussion = page.locator("form[data-action=comment]");
+    await expect(page.getByRole("heading", { name: "讨论与反馈", exact: true })).toBeVisible();
+    await expect(page.locator("form[data-action=feedback]")).toHaveCount(0);
+    await expect(discussion.locator("[name=environment]")).toHaveCount(0);
+    await expect(discussion.locator("[required]")).toHaveCount(1);
+    await expect(discussion.getByLabel("复现结果（可选）")).not.toBeVisible();
+    await discussion.getByLabel("内容", { exact: true }).fill("浏览器复现体验 " + width);
+    await discussion.locator("summary").click();
+    const outcome = { 360: "success", 768: "partial", 1440: "failed" }[width];
+    await discussion.getByLabel("复现结果（可选）").selectOption(outcome);
+    let discussionFailed = false;
+    await page.route("**/api/comments", async (route) => {
+      if (route.request().method() === "POST" && !discussionFailed) {
+        discussionFailed = true;
+        return route.fulfill({ status: 503, json: { error: { message: "测试模拟发布失败" } } });
+      }
+      return route.continue();
+    });
+    await discussion.getByRole("button", { name: "发布", exact: true }).click();
+    await expect(discussion.locator(".form-error")).toContainText("发布失败");
+    await expect(discussion.getByLabel("内容", { exact: true })).toHaveValue("浏览器复现体验 " + width);
+    await expect(discussion.getByLabel("复现结果（可选）")).toHaveValue(outcome);
+    await discussion.getByRole("button", { name: "发布", exact: true }).click();
+    await expect(page.locator(".comment")).toHaveCount(1);
+    await expect(page.locator(".comment-outcome")).toHaveText({ success: "复现成功", partial: "部分完成", failed: "无法完成" }[outcome] + " · v1");
     await expect(page.locator(".feedback-stats")).toContainText("1");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
+    await page.locator(".discussion").screenshot({ path: ".tools/screenshots/discussion-feedback-" + width + ".png" });
     await page.getByRole("link", { name: "编辑内容 ↗" }).click();
     await expect(form.getByLabel("资源名称 *", { exact: true })).toHaveValue(
       name,
@@ -150,15 +172,15 @@ for (const width of [360, 768, 1440])
     await expect(page.locator(".detail-main")).toContainText("依赖资源");
     await page
       .locator("form[data-action=comment]")
-      .getByLabel("讨论", { exact: true })
+      .getByLabel("内容", { exact: true })
       .fill("根据当前环境已复现，反馈清晰。");
-    await page.getByRole("button", { name: "发布讨论" }).click();
+    await page.getByRole("button", { name: "发布", exact: true }).click();
     await expect(page.locator(".comment")).toContainText("反馈清晰");
     await page.goto("/profile");
     await expect(page.locator(".dashboard-list")).toContainText(name);
     await page.goto("/profile?tab=feedback");
     await expect(page.locator("#profile-content")).toContainText(
-      "浏览器测试环境",
+      "浏览器复现体验",
     );
     await page.goto("/resources?industry=服装");
     await expect(page.locator(".card-grid")).toContainText(name);
@@ -265,12 +287,11 @@ test("editor verifies, features, creates an ordered topic and maintains communit
     },
   });
   await page.goto("/admin?tab=feedback");
-  await page.getByRole("button", { name: "记录处理" }).first().click();
+  const feedbackRow = page.locator(".dashboard-row").filter({ hasText: "需要编辑补充操作条件" });
+  await feedbackRow.getByRole("button", { name: "记录处理" }).click();
   await dialog.getByLabel("处理说明 *").fill("已核对使用环境并补充必要说明。");
   await dialog.getByRole("button", { name: "保存处理" }).click();
-  await expect(page.locator("#admin-content")).toContainText(
-    "暂无待处理的复现问题",
-  );
+  await expect(feedbackRow).toHaveCount(0);
   await page.goto("/admin?tab=runs");
   await page.getByRole("button", { name: "立即检查到期内容与外链" }).click();
   await expect(page.locator("#run-result")).toContainText("完成");
@@ -397,14 +418,15 @@ test("publishing tabs preserve drafts and Bilibili videos survive editing with s
   const response = await page.request.get(articlePath);
   expect(response.headers()["content-security-policy"]).toContain("frame-src https://player.bilibili.com");
   const commentForm = page.locator("form[data-action=comment]");
+  await commentForm.locator("summary").click();
   await commentForm.locator(".rating-choice").nth(3).click();
   await expect(commentForm.getByRole("radio", { name: "4 星", exact: true })).toBeChecked();
-  await commentForm.getByLabel("讨论", { exact: true }).fill("视频已完成复现，四星评分与讨论一起保存。");
+  await commentForm.getByLabel("内容", { exact: true }).fill("视频已完成复现，四星评分与讨论一起保存。");
   await expect(commentForm.locator("textarea")).toHaveCSS("outline-style", "none");
-  await commentForm.getByRole("button", { name: "发布讨论" }).click();
+  await commentForm.getByRole("button", { name: "发布", exact: true }).click();
   await expect(page.locator(".comment")).toContainText("四星评分");
   await expect(page.locator(".comment .rating-summary")).toHaveAttribute("aria-label", "4 星");
-  const buttonBox = await page.getByRole("button", { name: "发布讨论" }).boundingBox();
+  const buttonBox = await page.getByRole("button", { name: "发布", exact: true }).boundingBox();
   const commentBox = await page.locator(".comment").boundingBox();
   expect(commentBox.y).toBeGreaterThan(buttonBox.y + buttonBox.height);
   await page.getByRole("link", { name: "编辑内容 ↗" }).click();

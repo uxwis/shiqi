@@ -717,6 +717,8 @@ export function createCommunityService(db, { now = () => new Date() } = {}) {
       userId: c.user_id,
       user: c.nickname || "已注销用户",
       rating: c.rating == null ? null : Number(c.rating),
+      outcome: c.outcome || null,
+      revision: c.revision == null ? null : Number(c.revision),
       content: c.content,
       likes: Number(c.likes_count),
       createdAt: iso(c.created_at),
@@ -731,27 +733,42 @@ export function createCommunityService(db, { now = () => new Date() } = {}) {
       (!Number.isInteger(rating) || rating < 1 || rating > 5)
     )
       throw new ApiError(400, "评分必须为 1—5");
+    const content = cleanText(body.content, { name: "内容", min: 2, max: 2000 });
+    const outcome = body.outcome == null || body.outcome === "" ? null : body.outcome;
     const id = uid("c");
-    await db.query(
-      "INSERT INTO comments(id,resource_id,article_id,user_id,rating,content) VALUES($1,$2,$3,$4,$5,$6)",
-      [
-        id,
-        ref.type === "resource" ? ref.id : null,
-        ref.type === "article" ? ref.id : null,
-        actor.id,
-        rating,
-        cleanText(body.content, { name: "评论", min: 2, max: 2000 }),
-      ],
-    );
+    await db.transaction(async (client) => {
+      if (outcome !== null)
+        await saveFeedback(client, ref, { ...body, content }, actor);
+      await client.query(
+        "INSERT INTO comments(id,resource_id,article_id,user_id,rating,content,outcome,revision) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
+        [
+          id,
+          ref.type === "resource" ? ref.id : null,
+          ref.type === "article" ? ref.id : null,
+          actor.id,
+          rating,
+          content,
+          outcome,
+          outcome === null ? null : Number(body.revision),
+        ],
+      );
+    });
     return { id };
   }
   async function feedback(ref, body, actor) {
-    const row = await requireContent(ref.type, ref.id, { publicOnly: true });
+    await requireContent(ref.type, ref.id, { publicOnly: true });
+    return db.transaction((client) => saveFeedback(client, ref, body, actor));
+  }
+  async function saveFeedback(client, ref, body, actor) {
+    const row = (
+      await client.query(`SELECT * FROM ${tableFor(ref.type)} WHERE id=$1 FOR UPDATE`, [ref.id])
+    ).rows[0];
+    if (!detailAllowed(row)) throw new ApiError(410, "内容已下架");
     if (Number(body.revision) !== row.revision)
       throw new ApiError(409, "请为当前内容版本提交反馈");
     if (!["success", "partial", "failed"].includes(body.outcome))
       throw new ApiError(400, "请选择复现结果");
-    await db.query(
+    await client.query(
       `INSERT INTO reproduction_feedback(id,target_type,target_id,revision,user_id,outcome,environment,content,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
       ON CONFLICT(target_type,target_id,revision,user_id) DO UPDATE SET outcome=EXCLUDED.outcome,environment=EXCLUDED.environment,content=EXCLUDED.content,updated_at=EXCLUDED.updated_at,handled_at=NULL,handling_note=''`,
       [
@@ -761,7 +778,7 @@ export function createCommunityService(db, { now = () => new Date() } = {}) {
         row.revision,
         actor.id,
         body.outcome,
-        cleanText(body.environment, { name: "使用环境", min: 2, max: 1000 }),
+        cleanText(body.environment, { name: "使用环境", max: 1000 }),
         cleanText(body.content, { name: "反馈说明", max: 2000 }),
         now(),
       ],

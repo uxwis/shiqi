@@ -37,7 +37,8 @@ export function ratingStars(rating) {
   return `<span class="rating-summary" role="img" aria-label="${Number(rating)} 星">${Array.from({ length: 5 }, (_, index) => `<span class="${index < Number(rating) ? "is-filled" : ""}">${starIcon}</span>`).join("")}</span>`;
 }
 export function commentCard(comment, userId) {
-  return `<article class="comment"><div class="comment-heading"><strong>${escape(comment.user)}</strong><small>${date(comment.createdAt)}</small></div>${comment.rating ? ratingStars(comment.rating) : ""}<p>${escape(comment.content)}</p><div class="comment-actions"><button class="text-button" data-like="${escape(comment.id)}">赞 ${Number(comment.likes) || 0}</button>${userId === comment.userId ? `<button class="text-button" data-delete-comment="${escape(comment.id)}">删除</button>` : ""}</div></article>`;
+  const outcome = { success: "复现成功", partial: "部分完成", failed: "无法完成" }[comment.outcome];
+  return `<article class="comment"><div class="comment-heading"><strong>${escape(comment.user)}</strong><small>${date(comment.createdAt)}</small></div>${outcome ? `<span class="comment-outcome">${outcome} · v${escape(comment.revision)}</span>` : ""}${comment.rating ? ratingStars(comment.rating) : ""}<p>${escape(comment.content)}</p><div class="comment-actions"><button class="text-button" data-like="${escape(comment.id)}">赞 ${Number(comment.likes) || 0}</button>${userId === comment.userId ? `<button class="text-button" data-delete-comment="${escape(comment.id)}">删除</button>` : ""}</div></article>`;
 }
 
 export function card(item, { sequence } = {}) {

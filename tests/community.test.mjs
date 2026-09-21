@@ -503,7 +503,7 @@ test("upgrade rehearses a populated legacy database with read-only preview and p
   const database = await testDatabase({ migrate: false });
   try {
     const preview = await migrateDatabase(database, { preview: true });
-    assert.equal(preview.migrations.length, 5);
+    assert.equal(preview.migrations.length, 6);
     await database.query(
       "CREATE TABLE schema_migrations(name text PRIMARY KEY,applied_at timestamptz DEFAULT CURRENT_TIMESTAMP)",
     );
@@ -532,7 +532,7 @@ test("upgrade rehearses a populated legacy database with read-only preview and p
     );
     assert.deepEqual(
       (await migrateDatabase(database, { preview: true })).migrations,
-      ["005_ai_community.sql"],
+      ["005_ai_community.sql", "006_discussion_feedback.sql"],
     );
     await migrateDatabase(database);
     const row = (

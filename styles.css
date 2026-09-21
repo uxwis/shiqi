@@ -1243,17 +1243,51 @@ pre {
 }
 .feedback-stats {
   display: flex;
-  gap: 35px;
-  margin: 25px 0;
-}
-.feedback-stats span {
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 20px;
+  margin: 16px 0;
   color: var(--muted);
   font-size: 12px;
 }
 .feedback-stats strong {
-  display: block;
   color: var(--ink);
-  font-size: 25px;
+  font-weight: 600;
+}
+.feedback-version {
+  font-weight: 500;
+}
+.discussion-extras {
+  margin: 4px 0 20px;
+}
+.discussion-extras summary {
+  width: fit-content;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+.discussion-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 16px 24px;
+  padding-top: 16px;
+}
+.discussion-options > label {
+  min-width: 160px;
+  margin: 0;
+}
+.discussion-options .star-rating {
+  margin: 0;
+}
+.comment-outcome {
+  display: inline-block;
+  margin: 8px 10px 0 0;
+  padding: 3px 8px;
+  border-radius: 5px;
+  background: var(--tint);
+  color: var(--green);
+  font-size: 12px;
 }
 .discussion .comment {
   padding: 22px 0;
