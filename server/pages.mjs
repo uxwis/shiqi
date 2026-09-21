@@ -134,7 +134,7 @@ export function layout({
   data = {},
 }) {
   const canonical = config.appOrigin + path;
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#f5f7f7"><title>${e(title)} · 拾器</title><meta name="description" content="${e(description)}"><meta name="robots" content="${noindex ? "noindex,follow" : "index,follow"}"><link rel="canonical" href="${e(canonical)}"><meta property="og:title" content="${e(title)}"><meta property="og:description" content="${e(description)}"><meta property="og:url" content="${e(canonical)}">${cover ? `<meta property="og:image" content="${e(new URL(cover, config.appOrigin).href)}">` : ""}<link rel="icon" href="/favicon.png"><link rel="stylesheet" href="/styles.css"><script type="module" src="/app.js"></script></head><body><a class="skip-link" href="#main">跳到主要内容</a><header class="site-header"><div class="header-inner"><a href="/" class="brand" aria-label="拾器首页"><img src="/assets/logo.svg" alt="拾器" width="85" height="30"></a><nav class="main-nav" aria-label="主导航">${[
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#f5f7f7"><title>${e(title)} · 拾器</title><meta name="description" content="${e(description)}"><meta name="robots" content="${noindex ? "noindex,follow" : "index,follow"}"><link rel="canonical" href="${e(canonical)}"><meta property="og:title" content="${e(title)}"><meta property="og:description" content="${e(description)}"><meta property="og:url" content="${e(canonical)}">${cover ? `<meta property="og:image" content="${e(new URL(cover, config.appOrigin).href)}">` : ""}<link rel="icon" href="/favicon.png"><link rel="stylesheet" href="/styles.css"><script type="module" src="/app.js"></script></head><body${path === "/" ? ' class="home-page"' : ""}><a class="skip-link" href="#main">跳到主要内容</a><header class="site-header"><div class="header-inner"><a href="/" class="brand" aria-label="拾器首页"><img src="/assets/logo.svg" alt="拾器" width="85" height="30"></a><nav class="main-nav" aria-label="主导航">${[
     ["/", "首页"],
     ["/resources", "资源库"],
     ["/articles", "实战库"],
@@ -161,7 +161,20 @@ export async function renderPage(url, service, user) {
   if (path === "/") {
     const h = await service.home();
     title = "发现值得复用的 AI 资源";
-    body = `<section class="home-hero"><div><span class="eyebrow"><i></i> 发现 · 实践 · 共建</span><h1>找到好资源，<br>让 <span>AI</span> 真正用起来。</h1><p>从灵感到成果，发现可复用的工具、工作流与实战经验。</p><form class="hero-search" action="/search"><svg class="hero-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/></svg><input name="q" aria-label="搜索 AI 资源" placeholder="想用 AI 完成什么？"><button class="button" type="submit">搜索 <span aria-hidden="true">↗</span></button></form><div class="search-hints"><span>从一个任务开始</span><a href="/resources?industry=建筑">建筑方案</a><a href="/resources?industry=服装">服装设计</a><a href="/resources?domain=agent">Agent 工作流</a></div></div><div class="hero-art" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><span class="art-note">IDEAS INTO PRACTICE</span><div class="art-tile tile-a">⌘<small>连接工具</small></div><div class="art-tile tile-b">◇<small>创造可能</small></div><div class="art-center"><img src="/assets/logo-mark.svg" alt="" width="56" height="56"></div><div class="art-tile tile-c">↗<small>复用经验</small></div><span class="art-bottom">A curated space for AI.</span></div></section><div class="domain-grid">${DOMAINS.map((d) => `<a href="/resources?domain=${d.id}"><span class="domain-icon${d.iconSrc ? "" : " is-placeholder"}" data-domain-icon="${d.id}" aria-hidden="true">${d.iconSrc ? `<img src="${e(d.iconSrc)}" alt="" width="36" height="36">` : ""}</span><div><strong>${e(d.name)}</strong><small>${e(d.description)}</small></div><b>↗</b></a>`).join("")}</div>`;
+    body = `<section class="home-hero" aria-labelledby="home-heading">
+      <div class="hero-copy">
+        <h1 id="home-heading">发现 <span>AI</span> 好资源</h1>
+        <p>从灵感到成果，发现可复用的工具、工作流与实战经验。</p>
+        <form class="hero-search" action="/search" role="search">
+          <svg class="hero-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>
+          <input name="q" aria-label="搜索 AI 资源" placeholder="想用 AI 完成什么？">
+          <button class="button" type="submit">搜索</button>
+        </form>
+        <div class="search-hints"><span>从一个任务开始</span><a href="/resources?industry=建筑">建筑方案</a><a href="/resources?industry=服装">服装设计</a><a href="/resources?domain=agent">Agent 工作流</a></div>
+      </div>
+      <div class="hero-art" aria-hidden="true"><img src="/assets/hero-bloom.svg" alt="" width="520" height="480" fetchpriority="high"></div>
+    </section>
+    <nav class="domain-grid" aria-label="按 AI 领域浏览">${DOMAINS.map((d) => `<a href="/resources?domain=${d.id}"><span class="domain-icon${d.iconSrc ? "" : " is-placeholder"}" data-domain-icon="${d.id}" aria-hidden="true">${d.iconSrc ? `<img src="${e(d.iconSrc)}" alt="" width="58" height="58">` : ""}</span><strong>${e(d.name)}</strong></a>`).join("")}</nav>`;
     if (h.featured.items.length)
       body += section(
         "编辑精选",
@@ -300,7 +313,7 @@ export async function renderPage(url, service, user) {
         "从任务出发，找到答案。",
         "搜索资源用途、平台、教程与专题。",
       ) +
-      `<form class="hero-search" action="/search"><input name="q" aria-label="搜索" value="${e(query.q)}" placeholder="例如：建筑方案、角色一致性、声音克隆"><button class="button">搜索</button></form>` +
+      `<form class="hero-search" action="/search" role="search"><input name="q" aria-label="搜索" value="${e(query.q)}" placeholder="例如：建筑方案、角色一致性、声音克隆"><button class="button">搜索</button></form>` +
       (result
         ? section(
             `资源 · ${result.resources.total}`,

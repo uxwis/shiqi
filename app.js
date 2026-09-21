@@ -12,6 +12,35 @@ if (typeof document !== "undefined") {
   dialog
     ?.querySelector(".dialog-close")
     .addEventListener("click", () => dialog.close());
+  const homeHero = document.querySelector(".home-hero");
+  const siteHeader = document.querySelector(".site-header");
+  if (homeHero && siteHeader) {
+    const syncHeader = () => {
+      const opacity = Math.min(1, Math.max(0, window.scrollY / 180));
+      siteHeader.style.setProperty("--header-opacity", String(opacity));
+    };
+    const syncBackdrop = () => {
+      const bottom = homeHero.getBoundingClientRect().bottom + window.scrollY;
+      document.body.style.setProperty("--hero-backdrop-height", Math.ceil(bottom) + "px");
+    };
+    let scrollFrame = 0;
+    window.addEventListener("scroll", () => {
+      if (scrollFrame) return;
+      scrollFrame = requestAnimationFrame(() => {
+        syncHeader();
+        scrollFrame = 0;
+      });
+    }, { passive: true });
+    const backdropObserver = new ResizeObserver(syncBackdrop);
+    backdropObserver.observe(homeHero);
+    backdropObserver.observe(siteHeader);
+    window.addEventListener("pageshow", () => {
+      syncBackdrop();
+      syncHeader();
+    });
+    syncBackdrop();
+    syncHeader();
+  }
   // Fragment paths are browser-only; preserve previously shared addresses.
   if (location.hash.startsWith("#/")) {
     const hash = location.hash.slice(1),
