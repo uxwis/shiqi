@@ -384,7 +384,7 @@ dialog::backdrop {
   row-gap: 3px;
   padding: 11px 12px;
   border: 1px solid var(--green);
-  border-radius: var(--radius-pill);
+  border-radius: 9px;
   background: var(--green);
   color: white;
   font-size: 13px;

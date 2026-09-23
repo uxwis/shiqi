@@ -25,8 +25,8 @@ import { renderRichBlock } from "../rich-text.js";
 
 const intro = (eyebrow, title, description, action = "") =>
   `<div class="page-intro"><div><span class="eyebrow">${eyebrow}</span><h1>${title}</h1><p>${description}</p></div>${action}</div>`;
-const section = (title, description, body, href = "") =>
-  `<section class="section"><div class="section-heading"><div><h2>${title}</h2>${description ? `<p>${description}</p>` : ""}</div>${href ? `<a class="text-link" href="${href}">查看全部 ↗</a>` : ""}</div>${body}</section>`;
+const section = (title, description, body, href = "", extraClass = "") =>
+  `<section class="section${extraClass ? " " + e(extraClass) : ""}"><div class="section-heading"><div><h2>${title}</h2>${description ? `<p>${description}</p>` : ""}</div>${href ? `<a class="text-link" href="${href}">查看全部 ↗</a>` : ""}</div>${body}</section>`;
 const options = (items, value, all = "全部") =>
   `<option value="">${all}</option>` +
   items
@@ -187,6 +187,7 @@ export async function renderPage(url, service, user) {
       "新的发现，来自正在实践的人。",
       cards(h.resources.items),
       "/resources",
+      "home-section-spaced",
     );
     if (h.verified.items.length)
       body += section(
@@ -201,6 +202,7 @@ export async function renderPage(url, service, user) {
         "从任务、过程到结果，一起看懂怎样完成。",
         cards(h.articles.items),
         "/articles",
+        "home-section-spaced",
       );
     if (h.topics.items.length)
       body += section(
@@ -208,6 +210,7 @@ export async function renderPage(url, service, user) {
         "围绕一个目标，连接资源和经验。",
         `<div class="topic-grid">${h.topics.items.map(topicCard).join("")}</div>`,
         "/topics",
+        "home-section-spaced",
       );
     body += `<section class="contribute-banner"><div><span class="eyebrow">BUILT BY THE COMMUNITY</span><h2>你的实践，也能成为他人的起点。</h2><p>分享正在使用的 AI 资源，记录具体用途、成果与使用条件。</p></div><a class="button" href="/submit">分享我的发现 ↗</a></section>`;
   } else if (["/resources", "/articles"].includes(path)) {

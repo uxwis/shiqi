@@ -253,6 +253,9 @@ p {
 .button.small {
   padding: 8px 15px;
 }
+.header-actions .button {
+  padding-block: 6px;
+}
 .text-button {
   background: none;
   border: 0;
@@ -400,7 +403,7 @@ p {
 .domain-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  border: 1px solid var(--line);
+  border: 0;
   border-radius: var(--radius);
   background: #ffffffd9;
   padding: 24px 12px;
@@ -462,6 +465,9 @@ p {
 }
 .section {
   margin: 44px 0;
+}
+.home-page .home-section-spaced {
+  margin-top: 64px;
 }
 .section-heading {
   display: flex;
@@ -1517,6 +1523,9 @@ pre {
   .section {
     margin: 35px 0;
   }
+  .home-page .home-section-spaced {
+    margin-top: 55px;
+  }
   .listing-layout {
     grid-template-columns: 1fr;
   }
@@ -1667,7 +1676,7 @@ pre {
     gap: 8px;
   }
   .header-actions .button {
-    padding: 7px 11px;
+    padding: 5px 11px;
     font-size: 12px;
   }
   .account-link {
